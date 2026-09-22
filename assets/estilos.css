@@ -1,0 +1,309 @@
+/* ==========================================================================
+   Asistente de trámites FIIS - UNFV
+   Paleta granate institucional sobre superficies claras. Minimalista: un solo
+   acento de color, jerarquía por peso tipográfico y espacio, no por decoración.
+   ========================================================================== */
+
+:root {
+  --granate: #792d2f;
+  --granate-oscuro: #5c2122;
+  --granate-suave: #f3eae9;
+  --granate-borde: #e2cdcc;
+  --tinta: #1b1717;
+  --tinta-suave: #6e6260;
+  --superficie: #ffffff;
+  --fondo: #faf8f7;
+  --borde: #e7e0de;
+  --exito: #2f6b46;
+  --radio: 10px;
+  --sombra: 0 1px 2px rgba(27, 23, 23, 0.05);
+}
+
+html, body, [class*="css"] {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--tinta);
+}
+
+.stApp {
+  background-color: var(--fondo);
+}
+
+/* Oculta la cabecera por defecto para que el encabezado propio quede arriba */
+header[data-testid="stHeader"] {
+  background: transparent;
+}
+
+.block-container {
+  max-width: 940px;
+  padding-top: 1.6rem;
+  padding-bottom: 5rem;
+}
+
+/* ------------------------------------------------------------------ encabezado */
+.encabezado-fiis {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 0 1.1rem 0;
+  border-bottom: 2px solid var(--granate);
+  margin-bottom: 1.6rem;
+}
+
+.encabezado-fiis img {
+  height: 54px;
+  width: auto;
+}
+
+.encabezado-textos {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.encabezado-titulo {
+  font-size: 1.28rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--tinta);
+  margin: 0;
+}
+
+.encabezado-subtitulo {
+  font-size: 0.86rem;
+  color: var(--tinta-suave);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ chat */
+[data-testid="stChatMessage"] {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  box-shadow: var(--sombra);
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.7rem;
+}
+
+[data-testid="stChatMessage"] p {
+  font-size: 0.94rem;
+  line-height: 1.6;
+  margin-bottom: 0.4rem;
+}
+
+[data-testid="stChatInput"] textarea {
+  font-size: 0.94rem;
+}
+
+/* ------------------------------------------------------------------ panel lateral */
+[data-testid="stSidebar"] {
+  background: var(--superficie);
+  border-right: 1px solid var(--borde);
+}
+
+[data-testid="stSidebar"] .block-container {
+  padding-top: 1.4rem;
+}
+
+.panel-titulo {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--tinta-suave);
+  margin: 1.3rem 0 0.5rem 0;
+}
+
+.tarjeta-tramite {
+  background: var(--granate-suave);
+  border: 1px solid var(--granate-borde);
+  border-left: 3px solid var(--granate);
+  border-radius: var(--radio);
+  padding: 0.75rem 0.85rem;
+  margin-bottom: 0.4rem;
+}
+
+.tarjeta-tramite .nombre {
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--granate-oscuro);
+  margin-bottom: 0.35rem;
+}
+
+.tarjeta-tramite .detalle {
+  font-size: 0.79rem;
+  color: var(--tinta-suave);
+  line-height: 1.5;
+}
+
+.tarjeta-vacia {
+  border: 1px dashed var(--borde);
+  border-radius: var(--radio);
+  padding: 0.75rem 0.85rem;
+  font-size: 0.82rem;
+  color: var(--tinta-suave);
+}
+
+/* Lista de verificación de campos */
+.lista-campos {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.lista-campos li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  padding: 0.12rem 0;
+  color: var(--tinta-suave);
+}
+
+.lista-campos li.completo {
+  color: var(--tinta);
+}
+
+.lista-campos .marca {
+  font-size: 0.72rem;
+  width: 0.9rem;
+  flex-shrink: 0;
+}
+
+.lista-campos li.completo .marca {
+  color: var(--exito);
+}
+
+.lista-campos li.pendiente .marca {
+  color: var(--granate);
+}
+
+.lista-campos .valor {
+  color: var(--tinta-suave);
+  font-size: 0.78rem;
+}
+
+/* ------------------------------------------------------------------ progreso */
+[data-testid="stSidebar"] [data-testid="stProgress"] > div > div > div {
+  background-color: var(--granate);
+}
+
+.progreso-texto {
+  font-size: 0.78rem;
+  color: var(--tinta-suave);
+  margin-top: -0.4rem;
+}
+
+/* ------------------------------------------------------------------ botones */
+.stButton > button,
+.stDownloadButton > button,
+.stFormSubmitButton > button {
+  background: var(--granate);
+  color: #fff;
+  border: 1px solid var(--granate);
+  border-radius: 8px;
+  font-weight: 560;
+  font-size: 0.88rem;
+  padding: 0.45rem 1.1rem;
+  transition: background 120ms ease;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover,
+.stFormSubmitButton > button:hover {
+  background: var(--granate-oscuro);
+  border-color: var(--granate-oscuro);
+  color: #fff;
+}
+
+.stButton > button:focus-visible,
+.stDownloadButton > button:focus-visible,
+.stFormSubmitButton > button:focus-visible {
+  outline: 2px solid var(--granate-oscuro);
+  outline-offset: 2px;
+}
+
+.stButton > button[kind="secondary"] {
+  background: transparent;
+  color: var(--granate);
+}
+
+.stButton > button[kind="secondary"]:hover {
+  background: var(--granate-suave);
+  color: var(--granate-oscuro);
+}
+
+/* ------------------------------------------------------------------ descarga */
+.bloque-descarga {
+  border: 1px solid var(--granate-borde);
+  border-left: 3px solid var(--granate);
+  background: var(--granate-suave);
+  border-radius: var(--radio);
+  padding: 0.7rem 0.85rem 0.3rem 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.bloque-descarga .archivo {
+  font-size: 0.79rem;
+  color: var(--granate-oscuro);
+  margin-bottom: 0.45rem;
+  word-break: break-all;
+}
+
+/* Botón "Abrir e imprimir": mismo lenguaje visual que stDownloadButton, pero es un
+   enlace (abre el PDF como data URI en una pestaña nueva), no un botón de Streamlit. */
+.boton-imprimir {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 2.3rem;
+  background: transparent;
+  color: var(--granate);
+  border: 1px solid var(--granate);
+  border-radius: 8px;
+  font-weight: 560;
+  font-size: 0.88rem;
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+  box-sizing: border-box;
+}
+
+.boton-imprimir:hover {
+  background: var(--granate);
+  color: #fff;
+}
+
+.boton-imprimir:focus-visible {
+  outline: 2px solid var(--granate-oscuro);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ varios */
+.stExpander {
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--superficie);
+}
+
+.aviso-estado {
+  font-size: 0.78rem;
+  color: var(--tinta-suave);
+  border-left: 2px solid var(--borde);
+  padding-left: 0.6rem;
+  margin-top: 0.8rem;
+  line-height: 1.5;
+}
+
+.aviso-estado.error {
+  border-left-color: var(--granate);
+  color: var(--granate-oscuro);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

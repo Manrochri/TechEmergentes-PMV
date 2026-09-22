@@ -1,0 +1,17 @@
+# Interfaz web
+streamlit>=1.50,<2.0
+
+# Modelo de lenguaje local
+ollama>=0.6.0,<1.0
+
+# Modelado y configuración
+pydantic>=2.11,<3.0
+pydantic-settings>=2.10,<3.0
+python-dotenv>=1.1,<2.0
+
+# Manipulación del PDF del FUT
+pypdf>=5.9,<7.0
+reportlab>=4.4,<6.0
+
+# Pruebas (opcional para ejecutar la app)
+pytest>=8.3,<9.0

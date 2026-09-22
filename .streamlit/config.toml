@@ -1,0 +1,14 @@
+# Tema institucional de la FIIS - UNFV.
+[theme]
+primaryColor = "#792D2F"
+backgroundColor = "#FAF8F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B1717"
+font = "sans serif"
+
+[server]
+headless = true
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false
