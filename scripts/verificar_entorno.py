@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.configuracion import obtenerConfiguracion  # noqa: E402
-from src.servicio_ollama import ServicioOllama  # noqa: E402
+from src.servicio_llm import seleccionarServicioLlm  # noqa: E402
 
 MARCA_OK = "[OK]   "
 MARCA_ERROR = "[ERROR]"
@@ -28,7 +28,9 @@ def verificarVersionPython() -> bool:
 
 def verificarDependencias() -> bool:
     """Confirma que las librerías principales están instaladas."""
-    modulos = ("streamlit", "ollama", "pydantic", "pydantic_settings", "pypdf", "reportlab")
+    modulos = (
+        "streamlit", "ollama", "requests", "pydantic", "pydantic_settings", "pypdf", "reportlab",
+    )
     faltantes: list[str] = []
     for modulo in modulos:
         try:
@@ -54,11 +56,16 @@ def verificarArchivos() -> bool:
     return not problemas
 
 
-def verificarOllama() -> bool:
-    """Confirma que el servidor responde y que el modelo está descargado."""
-    disponible, detalle = ServicioOllama().verificarDisponibilidad()
-    print(f"{MARCA_OK if disponible else MARCA_ERROR} {detalle}")
-    return disponible
+def verificarProveedorLlm() -> bool:
+    """Confirma qué proveedor de LLM se usaría: Qwen3 o, de respaldo, Gemini.
+
+    No es un error que se use Gemini: solo se marca [ERROR] si ni Qwen3 ni Gemini están
+    disponibles, porque en ese caso el asistente no podría conversar en absoluto.
+    """
+    _, nombreProveedor, detalle = seleccionarServicioLlm()
+    print(f"{MARCA_OK} Proveedor de LLM: {nombreProveedor}")
+    print(f"        {detalle}")
+    return "no disponibles" not in detalle.lower()
 
 
 def principal() -> int:
@@ -68,7 +75,7 @@ def principal() -> int:
         verificarVersionPython(),
         verificarDependencias(),
         verificarArchivos(),
-        verificarOllama(),
+        verificarProveedorLlm(),
     ]
     print("-" * 58)
     if all(resultados):

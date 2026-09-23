@@ -15,3 +15,6 @@ reportlab>=4.4,<6.0
 
 # Pruebas (opcional para ejecutar la app)
 pytest>=8.3,<9.0
+
+# Modelo de lenguaje de respaldo (API de Gemini) cuando Qwen3 no está disponible
+requests>=2.31,<3.0

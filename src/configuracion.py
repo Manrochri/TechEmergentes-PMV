@@ -33,6 +33,19 @@ class Configuracion(BaseSettings):
     ollamaVentanaContexto: int = Field(default=8192, ge=2048, alias="OLLAMA_NUM_CTX")
     ollamaMaxTokens: int = Field(default=1024, ge=128, alias="OLLAMA_MAX_TOKENS")
 
+    # --- Gemini (respaldo cuando Qwen3 no está disponible) -----------------------
+    geminiApiKey: str = Field(default="", alias="GEMINI_API_KEY")
+    geminiModelo: str = Field(default="gemini-3.6-flash", alias="GEMINI_MODELO")
+    geminiTemperatura: float = Field(default=0.2, ge=0.0, le=2.0, alias="GEMINI_TEMPERATURA")
+    geminiTiempoEspera: int = Field(default=60, ge=10, alias="GEMINI_TIEMPO_ESPERA")
+    geminiMaxTokens: int = Field(default=1024, ge=128, alias="GEMINI_MAX_TOKENS")
+
+    # --- Selección de proveedor de LLM -------------------------------------------
+    #: Switch SOLO para pruebas manuales: "" (por defecto) = automático (Qwen3 y, si no
+    #: está disponible, Gemini); "qwen" o "gemini" fuerzan ese proveedor sin comprobar
+    #: antes si Qwen3 responde.
+    proveedorLlmManual: str = Field(default="", alias="PROVEEDOR_LLM_MANUAL")
+
     # --- Rutas ------------------------------------------------------------------
     rutaPlantillaFut: Path = Field(
         default=RAIZ_PROYECTO / "assets" / "FUT_SG-FORMULARIO.pdf",

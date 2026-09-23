@@ -31,7 +31,8 @@ from .plantillas_prompt import (
     construirPromptFundamentacion,
     describirCampo,
 )
-from .servicio_ollama import ErrorOllama, ServicioOllama
+from .errores_llm import ErrorServicioLlm
+from .servicio_llm import ServicioLlm, seleccionarServicioLlm
 from .validaciones import limpiarTexto, normalizarClave
 
 registrador = logging.getLogger(__name__)
@@ -95,11 +96,22 @@ class AgenteFut:
 
     def __init__(
         self,
-        servicio: ServicioOllama | None = None,
+        servicio: ServicioLlm | None = None,
         configuracion: Configuracion | None = None,
+        nombreProveedor: str | None = None,
+        detalleProveedor: str | None = None,
     ) -> None:
         self.configuracion = configuracion or obtenerConfiguracion()
-        self.servicio = servicio or ServicioOllama(self.configuracion)
+        if servicio is not None:
+            # Servicio inyectado explícitamente (p. ej. en pruebas): se respeta tal
+            # cual y no se ejecuta la selección automática Qwen3 / Gemini.
+            self.servicio = servicio
+            self.nombreProveedor = nombreProveedor or "Modelo personalizado"
+            self.detalleProveedor = detalleProveedor or ""
+        else:
+            self.servicio, self.nombreProveedor, self.detalleProveedor = seleccionarServicioLlm(
+                self.configuracion
+            )
         self._esquemaExtraccion = construirEsquemaExtraccion()
 
     # ------------------------------------------------------------------ turno
@@ -211,7 +223,7 @@ class AgenteFut:
     ) -> list[str]:
         """Integra al estado los datos del último mensaje.
 
-        Primero corre el extractor determinista (regex), que no depende de Ollama y
+        Primero corre el extractor determinista (regex), que no depende del LLM y
         cubre los campos con formato validable (DNI, celular, correo, RUC). Luego se
         completa con lo que el modelo de lenguaje identifique en texto libre (nombres,
         dirección, escuela, trámite). Si el modelo propone un valor distinto para un
@@ -228,7 +240,7 @@ class AgenteFut:
         ]
         try:
             datos = self.servicio.extraerEstructurado(mensajes, self._esquemaExtraccion)
-        except ErrorOllama as error:
+        except ErrorServicioLlm as error:
             registrador.warning("Extracción con el modelo falló: %s", error)
             advertencias.append(str(error))
             datos = {}
@@ -307,7 +319,7 @@ class AgenteFut:
         ]
         try:
             respuestaModelo = self.servicio.conversar(mensajes)
-        except ErrorOllama as error:
+        except ErrorServicioLlm as error:
             advertencias.append(str(error))
             respuestaModelo = ""
 
@@ -341,7 +353,7 @@ class AgenteFut:
 
     @staticmethod
     def preguntaDeRespaldo(campos: list[str]) -> str:
-        """Pregunta sin modelo, por si Ollama no está disponible."""
+        """Pregunta sin modelo, por si ni Qwen3 ni Gemini están disponibles."""
         etiquetas = [describirCampo(c).lower() for c in campos]
         if not etiquetas:
             return "¿Me confirmas los datos que faltan?"
@@ -381,7 +393,7 @@ class AgenteFut:
             ]
             try:
                 encabezado = self.servicio.conversar(mensajes, temperatura=0.3)
-            except ErrorOllama as error:
+            except ErrorServicioLlm as error:
                 registrador.info("Fundamentación por plantilla: %s", error)
                 encabezado = ""
 

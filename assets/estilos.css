@@ -251,34 +251,11 @@ header[data-testid="stHeader"] {
   word-break: break-all;
 }
 
-/* Botón "Abrir e imprimir": mismo lenguaje visual que stDownloadButton, pero es un
-   enlace (abre el PDF como data URI en una pestaña nueva), no un botón de Streamlit. */
-.boton-imprimir {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 2.3rem;
-  background: transparent;
-  color: var(--granate);
-  border: 1px solid var(--granate);
-  border-radius: 8px;
-  font-weight: 560;
-  font-size: 0.88rem;
-  text-decoration: none;
-  transition: background 120ms ease, color 120ms ease;
-  box-sizing: border-box;
-}
-
-.boton-imprimir:hover {
-  background: var(--granate);
-  color: #fff;
-}
-
-.boton-imprimir:focus-visible {
-  outline: 2px solid var(--granate-oscuro);
-  outline-offset: 2px;
-}
+/* El botón "Abrir e imprimir" ya no vive aquí: se genera con su propio CSS inline
+   dentro de app.py (renderizarBotonImprimir), porque necesita un <script> que
+   convierta el PDF a un Blob en el navegador y st.markdown no ejecuta <script>. Se
+   renderiza con st.components.v1.html en un iframe aparte, así que no puede tomar los
+   estilos de esta hoja. */
 
 /* ------------------------------------------------------------------ varios */
 .stExpander {

@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as componentes
 
 from src.agente_fut import AgenteFut, RespuestaAgente
 from src.catalogo_tramites import ESCUELAS_PROFESIONALES, listarTramites, obtenerTramite
@@ -21,7 +22,6 @@ from src.configuracion import Configuracion, obtenerConfiguracion
 from src.llenador_fut import ErrorLlenadoFut, generarNombreArchivo, rellenarFut
 from src.modelos import CAMPOS_OBLIGATORIOS, SolicitudFut
 from src.plantillas_prompt import MENSAJE_BIENVENIDA, describirCampo
-from src.servicio_ollama import ServicioOllama
 
 _configuracionLog = obtenerConfiguracion()
 logging.basicConfig(
@@ -66,10 +66,7 @@ def obtenerAgente() -> AgenteFut:
     return AgenteFut()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def verificarOllama() -> tuple[bool, str]:
-    """Estado del servidor de Ollama, consultado como máximo una vez por minuto."""
-    return ServicioOllama().verificarDisponibilidad()
+
 
 
 def inicializarEstado(configuracion: Configuracion) -> None:
@@ -340,17 +337,28 @@ def generarDesdeFormulario(solicitud: SolicitudFut, configuracion: Configuracion
 
 
 def renderizarEstadoDelSistema(configuracion: Configuracion) -> None:
-    """Indica si Ollama y la plantilla del FUT están disponibles."""
-    problemas = configuracion.verificarRutas()
-    disponible, detalle = verificarOllama()
+    """Indica la plantilla del FUT y qué proveedor de LLM está usando el agente.
 
+    El proveedor (Qwen3 o Gemini) se decide una sola vez, al crear el agente cacheado
+    (ver ``seleccionarServicioLlm`` en ``src/servicio_llm.py``): primero se comprueba si
+    Qwen3 responde en Ollama y, si no, se usa automáticamente la API de Gemini. Aquí se
+    muestra siempre el proveedor que el agente realmente está usando en esta sesión, no
+    una comprobación aparte, para que la interfaz nunca diga algo distinto de lo que en
+    verdad está respondiendo.
+    """
+    problemas = configuracion.verificarRutas()
     if problemas:
         st.markdown(
             f'<p class="aviso-estado error">{"<br />".join(problemas)}</p>',
             unsafe_allow_html=True,
         )
-    clase = "aviso-estado" if disponible else "aviso-estado error"
-    st.markdown(f'<p class="{clase}">{detalle}</p>', unsafe_allow_html=True)
+
+    agente = obtenerAgente()
+    st.markdown(
+        f'<p class="aviso-estado">Modelo en uso: <strong>{agente.nombreProveedor}</strong></p>',
+        unsafe_allow_html=True,
+    )
+    st.caption(agente.detalleProveedor)
 
 
 # ---------------------------------------------------------------------------
@@ -404,17 +412,73 @@ def renderizarDescarga(documento: dict[str, object], indice: int) -> None:
             use_container_width=True,
         )
     with columnaImprimir:
-        st.markdown(
-            f'<a class="boton-imprimir" href="data:application/pdf;base64,{pdfBase64}" '
-            f'target="_blank" rel="noopener">🖨️ Abrir e imprimir</a>',
-            unsafe_allow_html=True,
-        )
+        renderizarBotonImprimir(pdfBase64, indice)
 
     st.caption(
         "El botón de imprimir abre el PDF en una pestaña nueva; usa el ícono de impresión "
         "del visor de tu navegador (o Ctrl+P). Firma a mano sobre \"Firma y Post Firma del "
         "Solicitante\" antes de presentarlo: no se acepta ni se genera firma digital."
     )
+
+
+def renderizarBotonImprimir(pdfBase64: str, indice: int) -> None:
+    """Botón que abre el PDF en una pestaña nueva para imprimirlo.
+
+    Antes este botón era un `<a href="data:application/pdf;base64,...">` con
+    `target="_blank"`. Desde hace varias versiones, Chrome y otros navegadores basados
+    en Chromium bloquean la NAVEGACIÓN de nivel superior (abrir una pestaña o cambiar de
+    página) hacia un `data:` URI por motivos de seguridad (ver
+    https://developer.chrome.com/blog/deprecating-web-based-data-uris): la pestaña se
+    abre en blanco y el PDF nunca carga. Eso no afectaba a "Descargar PDF" porque el
+    atributo `download` de `st.download_button` dispara una descarga directa, que el
+    navegador no trata como una navegación.
+
+    La solución es reconstruir el PDF como un `Blob` dentro del navegador y abrir un
+    `blob:` URL, que sí se puede navegar/abrir en una pestaña nueva. `st.markdown` no
+    ejecuta las etiquetas `<script>` que inserta, así que este botón se renderiza con
+    `st.components.v1.html`, que sí lo hace (corre en su propio iframe).
+    """
+    idBoton = f"boton-imprimir-{indice}"
+    colorPrincipal = obtenerConfiguracion().colorPrincipal
+    html = f"""
+    <style>
+      html, body {{ margin: 0; padding: 0; }}
+      #{idBoton} {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 2.3rem;
+        background: transparent;
+        color: {colorPrincipal};
+        border: 1px solid {colorPrincipal};
+        border-radius: 8px;
+        font-weight: 560;
+        font-size: 0.88rem;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        cursor: pointer;
+        box-sizing: border-box;
+        transition: background 120ms ease, color 120ms ease;
+      }}
+      #{idBoton}:hover {{ background: {colorPrincipal}; color: #fff; }}
+      #{idBoton}:focus-visible {{ outline: 2px solid {colorPrincipal}; outline-offset: 2px; }}
+    </style>
+    <button id="{idBoton}" type="button">🖨️ Abrir e imprimir</button>
+    <script>
+      document.getElementById("{idBoton}").addEventListener("click", function () {{
+        const base64 = "{pdfBase64}";
+        const binario = atob(base64);
+        const bytes = new Uint8Array(binario.length);
+        for (let i = 0; i < binario.length; i++) {{
+          bytes[i] = binario.charCodeAt(i);
+        }}
+        const blob = new Blob([bytes], {{ type: "application/pdf" }});
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+      }});
+    </script>
+    """
+    componentes.html(html, height=44)
 
 
 def procesarEntrada(texto: str) -> None:

@@ -15,11 +15,12 @@ from typing import Any
 from ollama import Client, ResponseError
 
 from .configuracion import Configuracion, obtenerConfiguracion
+from .errores_llm import ErrorServicioLlm
 
 registrador = logging.getLogger(__name__)
 
 
-class ErrorOllama(RuntimeError):
+class ErrorOllama(ErrorServicioLlm):
     """Error de comunicación o de configuración con el servidor de Ollama."""
 
 

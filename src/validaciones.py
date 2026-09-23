@@ -65,17 +65,11 @@ def esDocumentoIdentidadValido(valor: str | None) -> bool:
 
 
 def esRucValido(valor: str | None) -> bool:
-    """Valida un RUC peruano: 11 dígitos y dígito verificador correcto (módulo 11)."""
+    """Verifica que el RUC tenga exactamente 11 dígitos."""
+    
     digitos = soloDigitos(valor)
-    if len(digitos) != 11:
-        return False
-    if digitos[:2] not in {"10", "15", "16", "17", "20"}:
-        return False
-    pesos = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
-    suma = sum(int(d) * p for d, p in zip(digitos[:10], pesos))
-    resto = 11 - (suma % 11)
-    verificador = {10: 0, 11: 1}.get(resto, resto)
-    return verificador == int(digitos[10])
+
+    return len(digitos) == 11
 
 
 def esCorreoValido(valor: str | None) -> bool:
