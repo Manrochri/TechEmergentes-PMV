@@ -22,6 +22,11 @@ from src.configuracion import Configuracion, obtenerConfiguracion
 from src.llenador_fut import ErrorLlenadoFut, generarNombreArchivo, rellenarFut
 from src.modelos import CAMPOS_OBLIGATORIOS, SolicitudFut
 from src.plantillas_prompt import MENSAJE_BIENVENIDA, describirCampo
+from src.puente_secretos import sincronizarSecretosDeStreamlit
+
+# Debe ejecutarse antes de la primera llamada a obtenerConfiguracion(): en Streamlit
+# Community Cloud no hay .env, los secretos viven en st.secrets.
+sincronizarSecretosDeStreamlit()
 
 _configuracionLog = obtenerConfiguracion()
 logging.basicConfig(
