@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import requests
@@ -25,6 +26,12 @@ from .errores_llm import ErrorServicioLlm
 registrador = logging.getLogger(__name__)
 
 _URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+#: Códigos HTTP transitorios de Google (servidor saturado o límite de tasa) que vale la
+#: pena reintentar: no son un error de nuestra solicitud, suelen resolverse solos.
+_CODIGOS_REINTENTABLES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+_INTENTOS_MAXIMOS: int = 3
+_ESPERA_BASE_SEGUNDOS: float = 1.0
 
 
 class ErrorGemini(ErrorServicioLlm):
@@ -133,24 +140,51 @@ class ServicioGemini:
         return cuerpo
 
     def _llamar(self, cuerpo: dict[str, Any]) -> dict[str, Any]:
+        """Llama a Gemini con reintentos ante errores transitorios (503, 429, etc.).
+
+        Un 503 "Service Unavailable" significa que los servidores de Google están
+        saturados en ese instante, no que la solicitud esté mal formada: casi siempre se
+        resuelve solo en un par de segundos. Sin reintento, como en la nube Gemini es el
+        único proveedor (no hay Ollama de respaldo), ese pico momentáneo tumbaba el turno
+        completo del estudiante. Se reintenta con espera creciente (1 s, 2 s) y solo para
+        esos códigos; un error real (clave inválida, 400, etc.) se propaga de inmediato.
+        """
         modelo = self.configuracion.geminiModelo
         clave = self.configuracion.geminiApiKey
         if not clave:
             raise ErrorGemini("No se configuró GEMINI_API_KEY.")
-        try:
-            respuesta = requests.post(
-                f"{_URL_BASE}/{modelo}:generateContent",
-                headers={"x-goog-api-key": clave, "Content-Type": "application/json"},
-                data=json.dumps(cuerpo),
-                timeout=self.configuracion.geminiTiempoEspera,
-            )
-            respuesta.raise_for_status()
-        except requests.RequestException as error:
-            raise ErrorGemini(f"Fallo al consultar a Gemini: {error}") from error
-        try:
-            return respuesta.json()
-        except ValueError as error:
-            raise ErrorGemini(f"Gemini devolvió una respuesta que no es JSON: {error}") from error
+
+        ultimoError: Exception | None = None
+        for intento in range(1, _INTENTOS_MAXIMOS + 1):
+            try:
+                respuesta = requests.post(
+                    f"{_URL_BASE}/{modelo}:generateContent",
+                    headers={"x-goog-api-key": clave, "Content-Type": "application/json"},
+                    data=json.dumps(cuerpo),
+                    timeout=self.configuracion.geminiTiempoEspera,
+                )
+                respuesta.raise_for_status()
+            except requests.RequestException as error:
+                ultimoError = error
+                codigo = getattr(error.response, "status_code", None)
+                if codigo not in _CODIGOS_REINTENTABLES or intento == _INTENTOS_MAXIMOS:
+                    raise ErrorGemini(f"Fallo al consultar a Gemini: {error}") from error
+                espera = _ESPERA_BASE_SEGUNDOS * intento
+                registrador.warning(
+                    "Gemini devolvió %s (intento %d/%d); reintentando en %.0fs.",
+                    codigo, intento, _INTENTOS_MAXIMOS, espera,
+                )
+                time.sleep(espera)
+                continue
+
+            try:
+                return respuesta.json()
+            except ValueError as error:
+                raise ErrorGemini(f"Gemini devolvió una respuesta que no es JSON: {error}") from error
+
+        # Inalcanzable en la práctica (el bucle siempre retorna o lanza), pero deja el
+        # tipo de retorno correcto ante cualquier cambio futuro en la lógica de arriba.
+        raise ErrorGemini(f"Fallo al consultar a Gemini tras reintentos: {ultimoError}")
 
     @staticmethod
     def _extraerTexto(datos: dict[str, Any]) -> str:
