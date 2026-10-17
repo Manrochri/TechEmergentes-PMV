@@ -23,7 +23,14 @@ from .catalogo_tramites import Tramite, TRAMITES_POR_CLAVE, buscarTramitePorText
 from .configuracion import Configuracion, obtenerConfiguracion
 from .extractor_determinista import contieneEtiquetas, extraerCamposDeterministas
 from .llenador_fut import ErrorLlenadoFut, generarNombreArchivo, guardarFut, rellenarFut
-from .modelos import PREFIJO_DATOS_TRAMITE, SolicitudFut
+from .modelos import (
+    CAMPO_CURSOS,
+    MAXIMO_CURSOS,
+    PREFIJO_CURSO,
+    PREFIJO_DATOS_TRAMITE,
+    SolicitudFut,
+    separarCampoCurso,
+)
 from .plantillas_prompt import (
     CAMPOS_OPCIONALES_PLANTILLA,
     ORDEN_PLANTILLA,
@@ -46,6 +53,14 @@ INSTRUCCIONES_PLANTILLA: str = (
     "después de los dos puntos y envíala. Para pasar de un renglón a otro usa las flechas "
     "o haz clic en el renglón; si presionas Enter antes de terminar, se envía lo que lleves "
     "y te vuelvo a dejar solo lo que falte."
+)
+
+#: Acompaña a la tabla de cursos que la interfaz muestra dentro del chat.
+INSTRUCCIONES_CURSOS: str = (
+    "Primero indica en la tabla de abajo qué cursos quieres rectificar: una fila por curso, "
+    "con la sección en la que estás matriculado y la sección a la que deseas cambiarte. "
+    "Puedes agregar o quitar filas. Cuando termines, pulsa «Continuar» y te pediré que "
+    "confirmes la lista antes de seguir con tus datos."
 )
 
 #: Campos a los que nunca se les asigna el mensaje completo como respuesta directa:
@@ -101,6 +116,9 @@ class RespuestaAgente:
     #: Plantilla "Etiqueta: " con los datos que faltan. La interfaz la escribe en el
     #: cuadro de mensaje del chat para que el estudiante solo la rellene y la envíe.
     plantilla: str = ""
+    #: True cuando la interfaz debe mostrar, en este mensaje, la tabla para elegir los
+    #: cursos (trámites por asignatura) antes de pedir los demás datos.
+    mostrarSelectorCursos: bool = False
 
 
 class AgenteFut:
@@ -153,6 +171,27 @@ class AgenteFut:
         registrador.debug("Campos actualizados en este turno: %s", actualizados)
 
         self.identificarTramiteSiFalta(mensaje, solicitud, actualizados)
+        return self.responderSegunEstado(mensaje, solicitud, historial, actualizados, advertencias)
+
+    def continuarTrasConfirmarCursos(
+        self, solicitud: SolicitudFut, historial: list[dict[str, str]], resumen: str
+    ) -> RespuestaAgente:
+        """Siguiente paso después de que el estudiante confirmó su lista de cursos.
+
+        ``resumen`` es el texto que la interfaz publicó como mensaje del estudiante
+        ("Confirmo estos cursos: ..."); se usa como último mensaje para el modelo.
+        """
+        return self.responderSegunEstado(resumen, solicitud, historial, [CAMPO_CURSOS], [])
+
+    def responderSegunEstado(
+        self,
+        mensaje: str,
+        solicitud: SolicitudFut,
+        historial: list[dict[str, str]],
+        actualizados: list[str],
+        advertencias: list[str],
+    ) -> RespuestaAgente:
+        """Decide la respuesta a partir del estado de la solicitud (sin extraer nada)."""
         solicitud.aplicarValoresDelTramite()
 
         # Un dato con formato inválido se vacía para que vuelva a figurar como faltante:
@@ -166,6 +205,20 @@ class AgenteFut:
 
         faltantes = solicitud.camposFaltantes()
         registrador.debug("Campos faltantes tras este turno: %s", faltantes)
+        if CAMPO_CURSOS in faltantes and "tramiteClave" not in faltantes:
+            # Trámite por asignatura: antes que nada, la lista de cursos en la tabla.
+            return RespuestaAgente(
+                mensaje="\n\n".join(
+                    p for p in (
+                        correccion,
+                        self.redactarPeticionDeCursos(mensaje, solicitud, historial, faltantes, advertencias),
+                    ) if p
+                ),
+                solicitud=solicitud,
+                camposActualizados=actualizados,
+                advertencias=advertencias,
+                mostrarSelectorCursos=True,
+            )
         if faltantes:
             camposPlantilla = self.camposParaPlantilla(solicitud, faltantes)
             texto = self.redactarPregunta(
@@ -211,6 +264,9 @@ class AgenteFut:
                 cambios: dict[str, object] = {"empresa": {campo.split(".", 1)[1]: valor}}
             elif campo.startswith(PREFIJO_DATOS_TRAMITE):
                 cambios = {"datosTramite": {campo[len(PREFIJO_DATOS_TRAMITE):]: valor}}
+            elif separarCampoCurso(campo) is not None:
+                numero, clave = separarCampoCurso(campo)
+                cambios = {"cursos": {numero: {clave: valor}}}
             else:
                 cambios = {campo: valor}
             actualizados = solicitud.fusionar(cambios)
@@ -270,6 +326,7 @@ class AgenteFut:
 
         registrador.debug("El modelo propuso (antes de depurar): %s", datos)
         datos = self._depurarDatosDelModelo(datos, actualizadosRegex)
+        datos = self._filtrarCursosDelModelo(datos, solicitud, actualizadosRegex)
         registrador.debug("El modelo propuso (después de depurar): %s", datos)
         actualizadosModelo = solicitud.fusionar(datos)
 
@@ -304,6 +361,30 @@ class AgenteFut:
 
         return datos
 
+    @staticmethod
+    def _filtrarCursosDelModelo(
+        datos: dict, solicitud: SolicitudFut, yaActualizadosPorRegex: list[str]
+    ) -> dict:
+        """Los cursos que propone el modelo solo completan datos vacíos.
+
+        Si la plantilla (regex) ya trajo algún curso en este turno, se ignoran los del
+        modelo: su lista no trae números de curso y podría desalinearse con la plantilla.
+        """
+        cursos = datos.pop("cursos", None)
+        if not isinstance(cursos, list) or any(c.startswith(PREFIJO_CURSO) for c in yaActualizadosPorRegex):
+            return datos
+        filtrados: dict[int, dict[str, str]] = {}
+        for numero, curso in enumerate(cursos[:MAXIMO_CURSOS], start=1):
+            if not isinstance(curso, dict):
+                continue
+            existente = solicitud.cursos[numero - 1] if numero <= len(solicitud.cursos) else {}
+            nuevos = {k: v for k, v in curso.items() if v not in (None, "") and not existente.get(k)}
+            if nuevos:
+                filtrados[numero] = nuevos
+        if filtrados:
+            datos["cursos"] = filtrados
+        return datos
+
     def identificarTramiteSiFalta(
         self, mensaje: str, solicitud: SolicitudFut, actualizados: list[str]
     ) -> Tramite | None:
@@ -334,6 +415,8 @@ class AgenteFut:
         orden[posicion:posicion] = [
             f"{PREFIJO_DATOS_TRAMITE}{c.clave}" for c in solicitud.tramite.camposAdicionales
         ]
+        # Los cursos se eligen antes, en la tabla del chat. Solo si algún dato de un curso
+        # ya confirmado se vació después, se vuelve a pedir aquí (salvaguarda de abajo).
         campos = [
             campo
             for campo in orden
@@ -341,8 +424,62 @@ class AgenteFut:
             or (campo in CAMPOS_OPCIONALES_PLANTILLA and not getattr(solicitud, campo, ""))
         ]
         # Salvaguarda: cualquier faltante que no esté en ORDEN_PLANTILLA también se pide.
-        campos += [c for c in faltantes if c not in campos and c != "tramiteClave"]
+        campos += [
+            c for c in faltantes if c not in campos and c not in ("tramiteClave", CAMPO_CURSOS)
+        ]
         return campos
+
+    def redactarPeticionDeCursos(
+        self,
+        mensaje: str,
+        solicitud: SolicitudFut,
+        historial: list[dict[str, str]],
+        faltantes: list[str],
+        advertencias: list[str],
+    ) -> str:
+        """Texto que acompaña a la tabla de cursos: respuesta breve del modelo + instrucciones."""
+        introduccion = self._respuestaBreveDelModelo(mensaje, solicitud, historial, faltantes, advertencias)
+        tramite = solicitud.tramite
+        if not introduccion and tramite is not None:
+            introduccion = f"Te ayudo con tu {tramite.nombre.lower()}."
+        costo = ""
+        if tramite is not None and tramite.cobroPorCurso:
+            costo = f"_El costo es {tramite.montoUnitarioTexto}; el total se calcula según los cursos que agregues._"
+        return "\n\n".join(p for p in (introduccion, INSTRUCCIONES_CURSOS, costo) if p)
+
+    def _respuestaBreveDelModelo(
+        self,
+        mensaje: str,
+        solicitud: SolicitudFut,
+        historial: list[dict[str, str]],
+        faltantes: list[str],
+        advertencias: list[str],
+    ) -> str:
+        """Frase del modelo para responder al estudiante; vacía si falla o miente."""
+        mensajes = [
+            {
+                "role": "system",
+                "content": construirPromptConversacion(
+                    contextoTramite=self.describirTramite(solicitud),
+                    datosRegistrados=self.resumirDatos(solicitud),
+                    datosFaltantes="\n".join(f"- {describirCampo(c)}" for c in faltantes),
+                ),
+            },
+            *self.recortarHistorial(historial),
+            {"role": "user", "content": mensaje},
+        ]
+        try:
+            respuesta = self.servicio.conversar(mensajes).strip()
+        except ErrorServicioLlm as error:
+            advertencias.append(str(error))
+            return ""
+        if respuesta and self._afirmaFalsaCompletitud(respuesta):
+            registrador.warning(
+                "Se descartó una respuesta del modelo que insinuaba que el trámite ya "
+                "estaba completo, pero todavía faltan datos: %s", respuesta[:300],
+            )
+            return ""
+        return respuesta
 
     def redactarPregunta(
         self,
@@ -370,33 +507,9 @@ class AgenteFut:
         if camposPlantilla is None:
             camposPlantilla = self.camposParaPlantilla(solicitud, faltantes)
 
-        mensajes = [
-            {
-                "role": "system",
-                "content": construirPromptConversacion(
-                    contextoTramite=self.describirTramite(solicitud),
-                    datosRegistrados=self.resumirDatos(solicitud),
-                    datosFaltantes="\n".join(f"- {describirCampo(c)}" for c in faltantes),
-                ),
-            },
-            *self.recortarHistorial(historial),
-            {"role": "user", "content": mensaje},
-        ]
-        try:
-            respuestaModelo = self.servicio.conversar(mensajes)
-        except ErrorServicioLlm as error:
-            advertencias.append(str(error))
-            respuestaModelo = ""
-
-        registrador.debug("Respuesta cruda del modelo (conversación): %s", respuestaModelo[:300])
-
-        respuestaModelo = respuestaModelo.strip()
-        if respuestaModelo and self._afirmaFalsaCompletitud(respuestaModelo):
-            registrador.warning(
-                "Se descartó una respuesta del modelo que insinuaba que el trámite ya "
-                "estaba completo, pero todavía faltan datos: %s", respuestaModelo[:300],
-            )
-            respuestaModelo = ""
+        respuestaModelo = self._respuestaBreveDelModelo(
+            mensaje, solicitud, historial, faltantes, advertencias
+        )
 
         if not camposPlantilla:
             # Todavía no se sabe qué trámite es: no hay plantilla que mostrar aún.
@@ -566,7 +679,8 @@ class AgenteFut:
         if tramite is None:
             return "Tu FUT está listo. Imprímelo y fírmalo a mano antes de presentarlo."
         return (
-            f"Tu FUT de {tramite.nombre.lower()} está listo. Costo: {tramite.resumirCosto()}. "
+            f"Tu FUT de {tramite.nombre.lower()} está listo. "
+            f"Costo: {tramite.resumirCosto(solicitud.cantidadCursos)}. "
             "Imprímelo, fírmalo a mano y preséntalo en la Oficina de Trámite Documentario."
         )
 
@@ -585,8 +699,11 @@ class AgenteFut:
         tramite = solicitud.tramite
         if tramite is None:
             return ""
+        costo = tramite.montoUnitarioTexto
+        if tramite.cobroPorCurso and solicitud.cantidadCursos:
+            costo += f" (total: {tramite.resumirCosto(solicitud.cantidadCursos)})"
         return (
-            f"{tramite.nombre}. Costo: {tramite.montoFormateado}. "
+            f"{tramite.nombre}. Costo: {costo}. "
             f"Código de pago: {tramite.codigoPago}. "
             f"Dependencia de destino: {solicitud.dependencia or tramite.dependencia}."
         )
@@ -599,6 +716,7 @@ class AgenteFut:
             if valor and clave not in {"fundamentacion", "documentosAdjuntos"}:
                 lineas.append(f"- {describirCampo(clave)}: {valor}")
         lineas += [f"- {linea}" for linea in solicitud.lineasDatosTramite()]
+        lineas += [f"- Curso {linea}" for linea in solicitud.lineasCursos()]
         if solicitud.esCartaPresentacion:
             for clave in ("nombreInstitucion", "ruc", "correo", "telefono", "direccion", "destinatario"):
                 valor = getattr(solicitud.empresa, clave, "")

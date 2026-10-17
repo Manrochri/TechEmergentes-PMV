@@ -35,10 +35,14 @@ def _agente() -> AgenteFut:
 
 def _rellenar(plantilla: str, valores: dict[str, str]) -> str:
     """Simula al estudiante escribiendo cada valor después de los dos puntos."""
+    def _etiqueta(renglon: str) -> str:
+        return renglon.split(" (", 1)[0].split(":", 1)[0].strip()
+
     renglones = []
     for renglon in plantilla.splitlines():
         campo = next(
-            (c for c in valores if construirPlantillaDeDatos([c]) == renglon), None
+            (c for c in valores if _etiqueta(construirPlantillaDeDatos([c])) == _etiqueta(renglon)),
+            None,
         )
         renglones.append(renglon + (valores[campo] if campo else ""))
     return "\n".join(renglones)
@@ -150,62 +154,181 @@ def testUnDatoEtiquetadoNoSeReasignaComoDatoSuelto() -> None:
     assert "celular" not in cambios
 
 
-def testRectificacionPideCursoYSecciones() -> None:
-    respuesta = _agente().procesarMensaje(
-        "quiero hacer una rectificacion de matricula", SolicitudFut(), [], []
-    )
-    assert respuesta.solicitud.tramiteClave == "rectificacion_matricula"
-    plantilla = respuesta.plantilla
-    assert "Curso (nombre o código del curso):" in plantilla
-    assert "Sección de origen (en la que estás matriculado):" in plantilla
-    assert "Sección de destino (a la que deseas cambiarte):" in plantilla
-    # Van después de los datos del estudiante.
-    assert plantilla.index("Correo electrónico") < plantilla.index("Curso")
+_DATOS_ESTUDIANTE: dict[str, str] = {
+    "apellidosNombres": "Pérez López, Ana",
+    "escuelaProfesional": "Industrial",
+    "codigoEstudiante": "2020123456",
+    "documentoIdentidad": "74125896",
+    "direccion": "Jr. Las Begonias 120",
+    "distrito": "Lince",
+    "celular": "987654321",
+    "correoElectronico": "ana.perez@unfv.edu.pe",
+}
 
 
-def testOtrosTramitesNoPidenCursoNiSecciones() -> None:
-    respuesta = _agente().procesarMensaje("necesito mi boleta de notas", SolicitudFut(), [], [])
-    assert "Curso" not in respuesta.plantilla
-    assert "Sección" not in respuesta.plantilla
-
-
-def testRectificacionCompletaImprimeCursoYSeccionesEnLaFundamentacion() -> None:
+def _iniciarRectificacion():
     agente = _agente()
     primera = agente.procesarMensaje(
         "quiero hacer una rectificacion de matricula", SolicitudFut(), [], []
     )
-    relleno = _rellenar(primera.plantilla, {
-        "apellidosNombres": "Pérez López, Ana",
-        "escuelaProfesional": "Industrial",
-        "codigoEstudiante": "2020123456",
-        "documentoIdentidad": "74125896",
-        "direccion": "Jr. Las Begonias 120",
-        "distrito": "Lince",
-        "celular": "987654321",
-        "correoElectronico": "ana.perez@unfv.edu.pe",
-        "tramite.curso": "Investigación de Operaciones I",
-        "tramite.seccionOrigen": "01",
-        "tramite.seccionDestino": "03",
-    })
-    respuesta = agente.procesarMensaje(relleno, primera.solicitud, [], primera.camposPreguntados)
+    return agente, primera
+
+
+_DOS_CURSOS: list[dict[str, str]] = [
+    {"curso": "Investigación de Operaciones I", "seccionOrigen": "01", "seccionDestino": "03"},
+    {"curso": "Física II", "seccionOrigen": "02", "seccionDestino": "01"},
+]
+
+
+def _confirmar(agente, solicitud, cursos):
+    assert solicitud.confirmarCursos(cursos) == []
+    return agente.continuarTrasConfirmarCursos(solicitud, [], "Confirmo los cursos.")
+
+
+def testRectificacionPrimeroMuestraLaTablaDeCursos() -> None:
+    _, respuesta = _iniciarRectificacion()
+    assert respuesta.solicitud.tramiteClave == "rectificacion_matricula"
+    assert respuesta.mostrarSelectorCursos
+    # Todavía no se piden los datos personales: primero los cursos.
+    assert respuesta.plantilla == ""
+    assert "tabla" in respuesta.mensaje
+    assert "S/ 8.40 por curso" in respuesta.mensaje
+
+
+def testEscribirEnElChatAntesDeConfirmarNoSaltaLaTabla() -> None:
+    agente, primera = _iniciarRectificacion()
+    respuesta = agente.procesarMensaje("DNI o pasaporte: 74125896", primera.solicitud, [], [])
+    assert respuesta.mostrarSelectorCursos
+    assert respuesta.solicitud.documentoIdentidad == "74125896"  # el dato igual se guarda
+
+
+def testOtrosTramitesNoMuestranTablaNiPidenCursos() -> None:
+    respuesta = _agente().procesarMensaje("necesito mi boleta de notas", SolicitudFut(), [], [])
+    assert not respuesta.mostrarSelectorCursos
+    assert "Curso" not in respuesta.plantilla
+
+
+def testValidacionDeLaTablaDeCursos() -> None:
+    from src.catalogo_tramites import CAMPOS_CURSO_RECTIFICACION as campos
+    from src.modelos import validarFilasCursos
+
+    _, errores = validarFilasCursos([], campos)
+    assert errores == ["Agrega al menos un curso."]
+
+    _, errores = validarFilasCursos([{"curso": "", "seccionOrigen": None, "seccionDestino": ""}], campos)
+    assert errores == ["Agrega al menos un curso."]  # una fila vacía no cuenta como curso
+
+    _, errores = validarFilasCursos([{"curso": "Física I", "seccionOrigen": "01", "seccionDestino": ""}], campos)
+    assert errores == ["Curso 1: falta sección de destino."]
+
+    _, errores = validarFilasCursos([{"curso": "Física I", "seccionOrigen": "01", "seccionDestino": "01"}], campos)
+    assert "distinta" in errores[0]
+
+    cursos, errores = validarFilasCursos(
+        [*_DOS_CURSOS, {"curso": None, "seccionOrigen": None, "seccionDestino": None}], campos
+    )
+    assert errores == [] and len(cursos) == 2
+
+
+def testUnaListaInvalidaNoSeConfirma() -> None:
+    _, primera = _iniciarRectificacion()
+    solicitud = primera.solicitud
+    errores = solicitud.confirmarCursos([{"curso": "Física I", "seccionOrigen": "", "seccionDestino": ""}])
+    assert errores
+    assert not solicitud.cursosConfirmados
+    assert "cursos" in solicitud.camposFaltantes()
+
+
+def testTrasConfirmarLosCursosSePidenLosDemasDatos() -> None:
+    agente, primera = _iniciarRectificacion()
+    respuesta = _confirmar(agente, primera.solicitud, _DOS_CURSOS)
+    assert not respuesta.mostrarSelectorCursos
+    assert "Apellidos y nombres" in respuesta.plantilla
+    # Los cursos ya se dieron en la tabla: no se repiten en la plantilla.
+    assert "Curso" not in respuesta.plantilla and "Sección" not in respuesta.plantilla
+    assert "Aún faltan 8 datos obligatorios" in respuesta.mensaje
+
+
+def testRectificacionDeDosCursosCalculaElTotalYLosImprime() -> None:
+    agente, primera = _iniciarRectificacion()
+    segunda = _confirmar(agente, primera.solicitud, _DOS_CURSOS)
+    relleno = _rellenar(segunda.plantilla, _DATOS_ESTUDIANTE)
+    respuesta = agente.procesarMensaje(relleno, segunda.solicitud, [], segunda.camposPreguntados)
 
     assert respuesta.formularioListo, respuesta.mensaje
-    fundamentacion = respuesta.solicitud.fundamentacion
-    assert "Curso: Investigación de Operaciones I" in fundamentacion
-    assert "Sección de origen: 01" in fundamentacion
-    assert "Sección de destino: 03" in fundamentacion
+    solicitud = respuesta.solicitud
+    assert solicitud.cantidadCursos == 2
+    assert "S/ 16.80 (2 cursos × S/ 8.40 c/u)" in respuesta.mensaje
+    fundamentacion = solicitud.fundamentacion
+    assert "Cursos a rectificar:" in fundamentacion
+    assert "1. Investigación de Operaciones I: de la sección 01 a la sección 03" in fundamentacion
+    assert "2. Física II: de la sección 02 a la sección 01" in fundamentacion
 
 
-def testUnaRespuestaSueltaSeAsignaAlDatoDelTramitePendiente() -> None:
-    """Si solo falta la sección de destino y el estudiante responde "03", se asigna ahí."""
+def testUnSoloCursoCobraElMontoIndividual() -> None:
+    agente, primera = _iniciarRectificacion()
+    segunda = _confirmar(agente, primera.solicitud, _DOS_CURSOS[1:])
+    relleno = _rellenar(segunda.plantilla, _DATOS_ESTUDIANTE)
+    respuesta = agente.procesarMensaje(relleno, segunda.solicitud, [], segunda.camposPreguntados)
+    assert respuesta.formularioListo, respuesta.mensaje
+    assert "S/ 8.40 (1 curso × S/ 8.40 c/u)" in respuesta.mensaje
+    assert "Curso a rectificar:" in respuesta.solicitud.fundamentacion
+
+
+def testSiYaTieneSusDatosAlConfirmarLosCursosSeGeneraElFut() -> None:
+    agente = _agente()
+    solicitud = SolicitudFut(tramiteClave="rectificacion_matricula")
+    solicitud.fusionar({k: v for k, v in _DATOS_ESTUDIANTE.items()})
+    respuesta = _confirmar(agente, solicitud, _DOS_CURSOS)
+    assert respuesta.formularioListo
+    assert respuesta.pdf
+
+
+def testTercerCursoAgregadoAMano() -> None:
+    from src.extractor_determinista import extraerSegmentosEtiquetados
+
+    cambios = extraerSegmentosEtiquetados(
+        "Curso 3: Química\nSección de origen 3: 05\nSección de destino 3: 06"
+    )
+    assert cambios["cursos"] == {3: {"curso": "Química", "seccionOrigen": "05", "seccionDestino": "06"}}
+
+
+def testBloquesSinNumerarSeAgrupanPorOrden() -> None:
+    from src.extractor_determinista import extraerSegmentosEtiquetados
+
+    cambios = extraerSegmentosEtiquetados(
+        "Curso: Física I\nSección de origen: 01\nSección de destino: 03\n"
+        "Curso: Química\nSección de origen: 02\nSección de destino: 04"
+    )
+    assert cambios["cursos"] == {
+        1: {"curso": "Física I", "seccionOrigen": "01", "seccionDestino": "03"},
+        2: {"curso": "Química", "seccionOrigen": "02", "seccionDestino": "04"},
+    }
+
+
+def testUnaRespuestaSueltaSeAsignaAlDatoDelCursoPendiente() -> None:
+    """Si solo falta la sección de destino del curso 1 y responde "03", se asigna ahí."""
     solicitud = SolicitudFut(
         tramiteClave="rectificacion_matricula",
-        datosTramite={"curso": "Física I", "seccionOrigen": "01"},
+        cursos=[{"curso": "Física I", "seccionOrigen": "01"}],
+        cursosConfirmados=True,
     )
     respuesta = _agente().procesarMensaje(
-        "03", solicitud, [], camposEsperados=["tramite.seccionDestino"]
+        "03", solicitud, [], camposEsperados=["curso.1.seccionDestino"]
     )
-    assert respuesta.solicitud.datosTramite["seccionDestino"] == "03"
+    assert respuesta.solicitud.cursos[0]["seccionDestino"] == "03"
+
+
+def testMontoPorCurso() -> None:
+    from src.catalogo_tramites import obtenerTramite
+
+    rectificacion = obtenerTramite("rectificacion_matricula")
+    assert rectificacion.montoUnitarioTexto == "S/ 8.40 por curso"
+    assert rectificacion.montoTotalFormateado(3) == "S/ 25.20"
+    assert rectificacion.detalleMonto(2) == "2 cursos × S/ 8.40 c/u"
+    carta = obtenerTramite("carta_presentacion")
+    assert carta.montoTotalFormateado(3) == "S/ 16.90"
+    assert carta.detalleMonto(3) == ""
 
 
 def testUnaPlantillaEnviadaSinRellenarNoSeTomaComoDato() -> None:

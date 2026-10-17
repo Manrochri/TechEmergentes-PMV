@@ -107,24 +107,76 @@ class Tramite:
     requiereDatosEmpresa: bool = False
     #: Datos obligatorios propios de este trámite, además de los del estudiante.
     camposAdicionales: tuple[CampoAdicional, ...] = ()
+    #: Datos que se piden por cada curso (uno o varios cursos en el mismo FUT).
+    camposPorCurso: tuple[CampoAdicional, ...] = ()
+    #: True si ``monto`` es el costo por curso y el total depende de cuántos se tramitan.
+    cobroPorCurso: bool = False
     documentosSugeridos: tuple[str, ...] = ()
     palabrasClave: tuple[str, ...] = ()
 
     @property
     def montoFormateado(self) -> str:
+        """Monto unitario del tarifario (por curso, si ``cobroPorCurso``)."""
         if self.monto is None:
             return "Sin costo registrado"
-        return f"S/ {self.monto:.2f}"
+        return formatearSoles(self.monto)
+
+    @property
+    def montoUnitarioTexto(self) -> str:
+        """Monto del tarifario con su unidad: "S/ 8.40 por curso" o "S/ 16.90"."""
+        if self.cobroPorCurso and self.monto is not None:
+            return f"{self.montoFormateado} por curso"
+        return self.montoFormateado
+
+    @property
+    def admiteCursos(self) -> bool:
+        return bool(self.camposPorCurso)
+
+    def montoTotal(self, cantidadCursos: int = 1) -> float | None:
+        """Monto a pagar: unitario × cursos si se cobra por curso (mínimo 1 curso)."""
+        if self.monto is None:
+            return None
+        if not self.cobroPorCurso:
+            return self.monto
+        return round(self.monto * max(1, cantidadCursos), 2)
+
+    def montoTotalFormateado(self, cantidadCursos: int = 1) -> str:
+        total = self.montoTotal(cantidadCursos)
+        return "Sin costo registrado" if total is None else formatearSoles(total)
+
+    def detalleMonto(self, cantidadCursos: int = 1) -> str:
+        """Nota con el monto individual, p. ej. "2 cursos × S/ 8.40 c/u"; vacía si no aplica."""
+        if not self.cobroPorCurso or self.monto is None:
+            return ""
+        cantidad = max(1, cantidadCursos)
+        unidad = "curso" if cantidad == 1 else "cursos"
+        return f"{cantidad} {unidad} × {self.montoFormateado} c/u"
 
     @property
     def llevaCodigoPago(self) -> bool:
         return self.codigoPago.upper() != "NO LLEVA"
 
-    def resumirCosto(self) -> str:
-        """Frase corta con el costo y el código de pago del Banco de la Nación."""
+    def resumirCosto(self, cantidadCursos: int = 1) -> str:
+        """Frase corta con el costo total y el código de pago del Banco de la Nación."""
+        monto = self.montoTotalFormateado(cantidadCursos)
+        detalle = self.detalleMonto(cantidadCursos)
+        if detalle:
+            monto = f"{monto} ({detalle})"
         if not self.llevaCodigoPago:
-            return f"{self.montoFormateado} (este concepto no lleva código de pago)"
-        return f"{self.montoFormateado} — código de pago {self.codigoPago}"
+            return f"{monto}; este concepto no lleva código de pago"
+        return f"{monto} — código de pago {self.codigoPago}"
+
+
+def formatearSoles(valor: float) -> str:
+    return f"S/ {valor:.2f}"
+
+
+#: Datos que se piden por cada curso en la rectificación de matrícula.
+CAMPOS_CURSO_RECTIFICACION: tuple[CampoAdicional, ...] = (
+    CampoAdicional("curso", "Curso", pista="nombre o código"),
+    CampoAdicional("seccionOrigen", "Sección de origen", pista="en la que estás matriculado"),
+    CampoAdicional("seccionDestino", "Sección de destino", pista="a la que deseas cambiarte"),
+)
 
 
 def _tramite(**datos) -> Tramite:
@@ -151,16 +203,24 @@ CATALOGO: tuple[Tramite, ...] = (
         codigoPago="83138",
         dependencia=DEP_REGISTROS,
         sumilla="Solicito rectificación de matrícula por asignatura",
-        camposAdicionales=(
-            CampoAdicional("curso", "Curso", pista="nombre o código del curso"),
-            CampoAdicional("seccionOrigen", "Sección de origen", pista="en la que estás matriculado"),
-            CampoAdicional("seccionDestino", "Sección de destino", pista="a la que deseas cambiarte"),
-        ),
+        # Se cobra por asignatura: el estudiante puede rectificar varios cursos en el
+        # mismo FUT y el monto final es S/ 8.40 por cada curso.
+        cobroPorCurso=True,
+        camposPorCurso=CAMPOS_CURSO_RECTIFICACION,
         documentosSugeridos=(
             "Comprobante de pago por rectificación de matrícula",
             "Ficha de matrícula vigente",
         ),
-        palabrasClave=("rectificacion de matricula", "rectificar matricula", "cambiar curso"),
+        palabrasClave=(
+            "rectificacion de matricula",
+            "rectificar matricula",
+            "rectificar mi matricula",
+            "rectificacion",
+            "cambio de seccion",
+            "cambiar de seccion",
+            "cambiarme de seccion",
+            "cambiar curso",
+        ),
     ),
     _tramite(
         clave="retiro_matricula",
@@ -440,6 +500,24 @@ def obtenerCampoAdicional(clave: str) -> CampoAdicional | None:
     return None
 
 
+def obtenerCampoPorCurso(clave: str) -> CampoAdicional | None:
+    """Busca la definición de un dato por curso (p. ej. ``seccionOrigen``)."""
+    for tramite in CATALOGO:
+        for campo in tramite.camposPorCurso:
+            if campo.clave == clave:
+                return campo
+    return None
+
+
+def listarCamposPorCurso() -> tuple[CampoAdicional, ...]:
+    """Todos los datos por curso del catálogo, sin repetir claves."""
+    vistos: dict[str, CampoAdicional] = {}
+    for tramite in CATALOGO:
+        for campo in tramite.camposPorCurso:
+            vistos.setdefault(campo.clave, campo)
+    return tuple(vistos.values())
+
+
 def listarCamposAdicionales() -> tuple[CampoAdicional, ...]:
     """Todos los datos propios de trámite del catálogo, sin repetir claves."""
     vistos: dict[str, CampoAdicional] = {}
@@ -511,7 +589,7 @@ def describirNumeralFut(numeral: str) -> str:
 def resumirCatalogoParaModelo() -> str:
     """Catálogo compacto que se inyecta en el prompt del modelo de lenguaje."""
     lineas = [
-        f"- {t.clave}: {t.nombre} | {t.montoFormateado} | código {t.codigoPago}"
+        f"- {t.clave}: {t.nombre} | {t.montoUnitarioTexto} | código {t.codigoPago}"
         for t in CATALOGO
     ]
     return "\n".join(lineas)
@@ -532,6 +610,9 @@ __all__ = [
     "buscarTramitePorTexto",
     "normalizarEscuela",
     "obtenerCampoAdicional",
+    "obtenerCampoPorCurso",
+    "listarCamposPorCurso",
+    "formatearSoles",
     "listarCamposAdicionales",
     "describirNumeralFut",
     "resumirCatalogoParaModelo",

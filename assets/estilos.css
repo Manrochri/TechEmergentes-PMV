@@ -136,6 +136,21 @@ header[data-testid="stHeader"] {
   line-height: 1.5;
 }
 
+.tarjeta-tramite .total {
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--granate-borde);
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--granate-oscuro);
+}
+
+.tarjeta-tramite .total span {
+  font-weight: 400;
+  font-size: 0.76rem;
+  color: var(--tinta-suave);
+}
+
 .tarjeta-vacia {
   border: 1px dashed var(--borde);
   border-radius: var(--radio);
@@ -314,6 +329,12 @@ header[data-testid="stHeader"] {
   font-variant-numeric: tabular-nums;
 }
 
+.fut-dato-nota {
+  font-size: 0.78rem;
+  color: var(--tinta-suave);
+  font-variant-numeric: tabular-nums;
+}
+
 .fut-mono {
   font-family: "JetBrains Mono", "Consolas", ui-monospace, monospace;
   letter-spacing: 0.06em;
@@ -396,6 +417,67 @@ header[data-testid="stHeader"] {
   font-size: 0.8rem;
   color: var(--tinta-suave);
   margin-top: 0.15rem;
+}
+
+/* ------------------------------------------------------------------ tabla de cursos */
+[data-testid="stChatMessage"] p.cursos-total {
+  font-size: 0.92rem;
+  color: var(--granate-oscuro);
+  margin: 0.4rem 0 0.15rem 0;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-testid="stChatMessage"] p.cursos-total strong {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+[data-testid="stChatMessage"] p.cursos-total span {
+  font-size: 0.8rem;
+  color: var(--tinta-suave);
+}
+
+[data-testid="stChatMessage"] p.cursos-ayuda {
+  font-size: 0.76rem;
+  color: var(--tinta-suave);
+  margin: 0 0 0.6rem 0;
+}
+
+.cursos-confirmar {
+  background: var(--granate-suave);
+  border: 1px solid var(--granate-borde);
+  border-radius: var(--radio);
+  padding: 0.85rem 1rem 0.7rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+[data-testid="stChatMessage"] p.cursos-pregunta {
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--tinta);
+  margin: 0 0 0.5rem 0;
+}
+
+.cursos-lista {
+  margin: 0 0 0.3rem 0;
+  padding-left: 1.2rem;
+}
+
+.cursos-lista li {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin-bottom: 0.25rem;
+}
+
+.cursos-lista .curso {
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.cursos-lista .secciones {
+  color: var(--tinta-suave);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 520px) {

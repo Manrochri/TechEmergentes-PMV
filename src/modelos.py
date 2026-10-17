@@ -43,6 +43,33 @@ CAMPOS_OBLIGATORIOS: tuple[str, ...] = (
 #: las listas de campos faltantes, p. ej. ``"tramite.curso"``.
 PREFIJO_DATOS_TRAMITE: str = "tramite."
 
+#: Prefijo de los datos por curso en las listas de campos: ``"curso.<n>.<clave>"``,
+#: con ``n`` desde 1 (p. ej. ``"curso.2.seccionDestino"``).
+PREFIJO_CURSO: str = "curso."
+
+#: Tope de cursos por FUT (evita que un número mal escrito cree cientos de filas).
+MAXIMO_CURSOS: int = 10
+
+#: Pseudo-campo que figura como faltante mientras el estudiante no haya confirmado,
+#: en la tabla del chat, la lista de cursos del trámite.
+CAMPO_CURSOS: str = "cursos"
+
+
+def claveCampoCurso(numero: int, clave: str) -> str:
+    """``claveCampoCurso(2, "seccionOrigen")`` -> ``"curso.2.seccionOrigen"``."""
+    return f"{PREFIJO_CURSO}{numero}.{clave}"
+
+
+def separarCampoCurso(campo: str) -> tuple[int, str] | None:
+    """Inverso de :func:`claveCampoCurso`; ``None`` si no es un campo de curso."""
+    if not campo.startswith(PREFIJO_CURSO):
+        return None
+    partes = campo.split(".")
+    if len(partes) != 3 or not partes[1].isdigit():
+        return None
+    return int(partes[1]), partes[2]
+
+
 #: Campos adicionales obligatorios cuando el trámite es la carta de presentación.
 CAMPOS_OBLIGATORIOS_EMPRESA: tuple[str, ...] = (
     "nombreInstitucion",
@@ -52,6 +79,45 @@ CAMPOS_OBLIGATORIOS_EMPRESA: tuple[str, ...] = (
     "direccion",
     "destinatario",
 )
+
+
+def validarFilasCursos(filas, camposPorCurso) -> tuple[list[dict[str, str]], list[str]]:
+    """Limpia las filas de la tabla de cursos y explica qué falta corregir.
+
+    Reglas: las filas totalmente vacías se ignoran; debe quedar al menos un curso y como
+    máximo ``MAXIMO_CURSOS``; cada curso necesita todos sus datos; y si el trámite pide
+    secciones de origen y destino, no pueden ser la misma.
+
+    Devuelve ``(cursosLimpios, errores)``; ``cursosLimpios`` solo es útil si no hay errores.
+    """
+    claves = [c.clave for c in camposPorCurso]
+    etiquetas = {c.clave: c.etiqueta for c in camposPorCurso}
+    cursos: list[dict[str, str]] = []
+    for fila in filas or []:
+        if not isinstance(fila, dict):
+            continue
+        limpia = {k: val.limpiarTexto(str(fila.get(k) or "")) for k in claves}
+        if any(limpia.values()):
+            cursos.append(limpia)
+
+    errores: list[str] = []
+    if not cursos:
+        errores.append("Agrega al menos un curso.")
+    if len(cursos) > MAXIMO_CURSOS:
+        errores.append(f"Puedes rectificar como máximo {MAXIMO_CURSOS} cursos en un mismo FUT.")
+    for numero, curso in enumerate(cursos, start=1):
+        vacios = [etiquetas[k].lower() for k in claves if not curso[k]]
+        if vacios:
+            errores.append(f"Curso {numero}: falta {', '.join(vacios)}.")
+        elif (
+            "seccionOrigen" in curso
+            and "seccionDestino" in curso
+            and val.normalizarClave(curso["seccionOrigen"]) == val.normalizarClave(curso["seccionDestino"])
+        ):
+            errores.append(
+                f"Curso {numero}: la sección de destino debe ser distinta de la de origen."
+            )
+    return cursos, errores
 
 
 class DatosEmpresa(BaseModel):
@@ -152,6 +218,13 @@ class SolicitudFut(BaseModel):
     # las secciones de origen y destino en la rectificación de matrícula.
     datosTramite: dict[str, str] = Field(default_factory=dict)
 
+    # Cursos del trámite cuando se tramita por asignatura (p. ej. rectificación de
+    # matrícula): una entrada por curso con las claves de ``Tramite.camposPorCurso``.
+    cursos: list[dict[str, str]] = Field(default_factory=list)
+    #: True cuando el estudiante revisó y confirmó la lista de cursos (tabla del chat o
+    #: formulario manual). Hasta entonces no se piden los demás datos.
+    cursosConfirmados: bool = False
+
     # ------------------------------------------------------------------ validadores
     @field_validator("apellidosNombres", mode="before")
     @classmethod
@@ -198,6 +271,7 @@ class SolicitudFut(BaseModel):
         """Lista ordenada de campos obligatorios que aún faltan."""
         faltantes = [c for c in CAMPOS_OBLIGATORIOS if not self._tieneValor(c)]
         faltantes += [f"{PREFIJO_DATOS_TRAMITE}{c}" for c in self.camposAdicionalesFaltantes()]
+        faltantes += self.camposDeCursoFaltantes()
         if self.esCartaPresentacion:
             faltantes += [f"empresa.{c}" for c in self.empresa.camposFaltantes()]
         return faltantes
@@ -211,6 +285,79 @@ class SolicitudFut(BaseModel):
             c.clave for c in tramite.camposAdicionales
             if not str(self.datosTramite.get(c.clave, "")).strip()
         ]
+
+    # ------------------------------------------------------------------ cursos
+    def cursosRegistrados(self) -> list[tuple[int, dict[str, str]]]:
+        """``(número, datos)`` de los cursos con al menos un dato (se ignoran filas vacías)."""
+        return [
+            (numero, curso)
+            for numero, curso in enumerate(self.cursos, start=1)
+            if any(str(v).strip() for v in curso.values())
+        ]
+
+    @property
+    def cantidadCursos(self) -> int:
+        """Cursos que se están tramitando; determina el monto total si se cobra por curso."""
+        return len(self.cursosRegistrados())
+
+    def camposDeCursoFaltantes(self) -> list[str]:
+        """Datos por curso pendientes.
+
+        Mientras la lista de cursos no esté confirmada, falta el pseudo-campo
+        ``"cursos"`` (la interfaz muestra la tabla de cursos). Ya confirmada, se revisa
+        por si algún dato se vació después (p. ej. por una corrección).
+        """
+        tramite = self.tramite
+        if tramite is None or not tramite.camposPorCurso:
+            return []
+        if not self.cursosConfirmados:
+            return [CAMPO_CURSOS]
+        registrados = self.cursosRegistrados() or [(1, {})]
+        return [
+            claveCampoCurso(numero, campo.clave)
+            for numero, curso in registrados
+            for campo in tramite.camposPorCurso
+            if not str(curso.get(campo.clave, "")).strip()
+        ]
+
+    def confirmarCursos(self, filas: list[dict[str, object]]) -> list[str]:
+        """Valida y guarda la lista de cursos de la tabla; devuelve los errores (o ``[]``).
+
+        Solo si no hay errores se reemplaza la lista completa y queda confirmada.
+        """
+        tramite = self.tramite
+        if tramite is None or not tramite.camposPorCurso:
+            return ["Este trámite no lleva cursos."]
+        cursos, errores = validarFilasCursos(filas, tramite.camposPorCurso)
+        if errores:
+            return errores
+        self.cursos = cursos
+        self.cursosConfirmados = True
+        return []
+
+    def asignarDatoDeCurso(self, numero: int, clave: str, valor: str) -> bool:
+        """Guarda un dato del curso ``numero`` (desde 1), creando las filas necesarias."""
+        texto = val.limpiarTexto(valor)
+        if not texto or not 1 <= numero <= MAXIMO_CURSOS:
+            return False
+        while len(self.cursos) < numero:
+            self.cursos.append({})
+        self.cursos[numero - 1][clave] = texto
+        return True
+
+    def lineasCursos(self) -> list[str]:
+        """Un renglón por curso para la fundamentación, p. ej.
+        "1. Física I: de la sección 01 a la sección 03"."""
+        lineas: list[str] = []
+        for posicion, (_, curso) in enumerate(self.cursosRegistrados(), start=1):
+            nombre = curso.get("curso", "") or "(curso sin nombre)"
+            origen = curso.get("seccionOrigen", "")
+            destino = curso.get("seccionDestino", "")
+            if origen or destino:
+                lineas.append(f"{posicion}. {nombre}: de la sección {origen} a la sección {destino}")
+            else:
+                lineas.append(f"{posicion}. {nombre}")
+        return lineas
 
     def lineasDatosTramite(self) -> list[str]:
         """Renglones "Etiqueta: valor" de los datos propios del trámite actual."""
@@ -261,7 +408,12 @@ class SolicitudFut(BaseModel):
         (ese extractor nunca sobrescribe un campo que ya tiene valor).
         """
         for campo in campos:
-            if campo.startswith(PREFIJO_DATOS_TRAMITE):
+            datoCurso = separarCampoCurso(campo)
+            if datoCurso is not None:
+                numero, clave = datoCurso
+                if 1 <= numero <= len(self.cursos):
+                    self.cursos[numero - 1].pop(clave, None)
+            elif campo.startswith(PREFIJO_DATOS_TRAMITE):
                 self.datosTramite.pop(campo[len(PREFIJO_DATOS_TRAMITE):], None)
             elif campo.startswith("empresa."):
                 nombre = campo.split(".", 1)[1]
@@ -316,7 +468,10 @@ class SolicitudFut(BaseModel):
                     f"documentos requeridos."
                 )
 
-        lineas = [encabezado, *self.lineasDatosTramite()]
+        cursos = self.lineasCursos()
+        if cursos:
+            cursos = ["Cursos a rectificar:" if len(cursos) > 1 else "Curso a rectificar:", *cursos]
+        lineas = [encabezado, *self.lineasDatosTramite(), *cursos]
         if self.esCartaPresentacion:
             lineas += self.empresa.aLineasFundamentacion()
         return "\n".join(linea for linea in lineas if linea.strip())
@@ -357,6 +512,7 @@ class SolicitudFut(BaseModel):
         cambios = dict(cambios)  # no alterar el diccionario del llamador
         datosEmpresa = cambios.pop("empresa", None)
         datosTramite = cambios.pop("datosTramite", None)
+        datosCursos = cambios.pop("cursos", None)
 
         for clave, valor in cambios.items():
             if clave not in type(self).model_fields or valor in (None, "", []):
@@ -385,10 +541,31 @@ class SolicitudFut(BaseModel):
                 self.datosTramite[str(clave)] = texto
                 modificados.append(f"{PREFIJO_DATOS_TRAMITE}{clave}")
 
+        # Cursos: {número: {clave: valor}} o una lista (posición 0 = curso 1).
+        if isinstance(datosCursos, list):
+            datosCursos = {i: c for i, c in enumerate(datosCursos, start=1)}
+        if isinstance(datosCursos, dict):
+            for numero, curso in datosCursos.items():
+                if not isinstance(curso, dict):
+                    continue
+                try:
+                    numero = int(numero)
+                except (TypeError, ValueError):
+                    continue
+                for clave, valor in curso.items():
+                    if self.asignarDatoDeCurso(numero, str(clave), str(valor or "")):
+                        modificados.append(claveCampoCurso(numero, str(clave)))
+
         return modificados
 
 
 __all__ = [
+    "CAMPO_CURSOS",
+    "validarFilasCursos",
+    "PREFIJO_CURSO",
+    "MAXIMO_CURSOS",
+    "claveCampoCurso",
+    "separarCampoCurso",
     "PREFIJO_DATOS_TRAMITE",
     "TipoSolicitante",
     "CAMPOS_OBLIGATORIOS",

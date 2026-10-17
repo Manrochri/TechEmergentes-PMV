@@ -21,7 +21,14 @@ from src.agente_fut import AgenteFut, RespuestaAgente
 from src.catalogo_tramites import ESCUELAS_PROFESIONALES, listarTramites, obtenerTramite
 from src.configuracion import Configuracion, obtenerConfiguracion
 from src.llenador_fut import ErrorLlenadoFut, generarNombreArchivo, rellenarFut
-from src.modelos import CAMPOS_OBLIGATORIOS, PREFIJO_DATOS_TRAMITE, SolicitudFut
+from src.modelos import (
+    CAMPOS_OBLIGATORIOS,
+    PREFIJO_DATOS_TRAMITE,
+    CAMPO_CURSOS,
+    SolicitudFut,
+    separarCampoCurso,
+    validarFilasCursos,
+)
 from src.plantillas_prompt import MENSAJE_BIENVENIDA, describirCampo
 from src.puente_secretos import sincronizarSecretosDeStreamlit
 
@@ -100,6 +107,14 @@ def inicializarEstado(configuracion: Configuracion) -> None:
     if "plantillaPendiente" not in st.session_state:
         # texto a escribir en el cuadro de mensaje en la próxima ejecución
         st.session_state.plantillaPendiente = None
+    if "selectorCursos" not in st.session_state:
+        # índice del mensaje que muestra la tabla de cursos (o None)
+        st.session_state.selectorCursos = None
+    if "cursosPorConfirmar" not in st.session_state:
+        # cursos ya validados que esperan el "Sí, son correctos" del estudiante
+        st.session_state.cursosPorConfirmar = None
+    if "versionTablaCursos" not in st.session_state:
+        st.session_state.versionTablaCursos = 0
 
 
 def reiniciarConversacion(configuracion: Configuracion) -> None:
@@ -112,6 +127,9 @@ def reiniciarConversacion(configuracion: Configuracion) -> None:
     st.session_state.camposEsperados = []
     st.session_state.plantillas = {}
     st.session_state.plantillaPendiente = None
+    st.session_state.selectorCursos = None
+    st.session_state.cursosPorConfirmar = None
+    st.session_state.versionTablaCursos += 1
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +195,24 @@ def renderizarTarjetaTramite(solicitud: SolicitudFut) -> None:
         )
         return
 
+    costo = html.escape(tramite.montoUnitarioTexto)
+    if tramite.llevaCodigoPago:
+        costo += f" · código {html.escape(tramite.codigoPago)}"
+    total = ""
+    if tramite.cobroPorCurso and solicitud.cantidadCursos:
+        total = (
+            f'<div class="total">Total: {html.escape(tramite.montoTotalFormateado(solicitud.cantidadCursos))}'
+            f' <span>({html.escape(tramite.detalleMonto(solicitud.cantidadCursos))})</span></div>'
+        )
     st.markdown(
         f"""
         <div class="tarjeta-tramite">
-          <div class="nombre">{tramite.nombre}</div>
+          <div class="nombre">{html.escape(tramite.nombre)}</div>
           <div class="detalle">
-            {tramite.montoFormateado} · código {tramite.codigoPago}<br />
-            {solicitud.dependencia or tramite.dependencia}
+            {costo}<br />
+            {html.escape(solicitud.dependencia or tramite.dependencia)}
           </div>
+          {total}
         </div>
         """,
         unsafe_allow_html=True,
@@ -199,6 +227,9 @@ def renderizarAvance(solicitud: SolicitudFut) -> None:
         obligatorios += [
             f"{PREFIJO_DATOS_TRAMITE}{c.clave}" for c in solicitud.tramite.camposAdicionales
         ]
+        if solicitud.tramite.camposPorCurso:
+            # Un solo renglón para la lista de cursos (se completa al confirmarla).
+            obligatorios.append(CAMPO_CURSOS)
     if solicitud.esCartaPresentacion:
         obligatorios += [
             "empresa.nombreInstitucion",
@@ -235,10 +266,17 @@ def obtenerValorLegible(solicitud: SolicitudFut, campo: str) -> str:
     """Valor corto del campo para mostrarlo junto a la marca de completado."""
     if campo == "tramiteClave":
         return ""
+    if campo == CAMPO_CURSOS:
+        cantidad = solicitud.cantidadCursos
+        return f"{cantidad} curso" if cantidad == 1 else f"{cantidad} cursos"
     if campo.startswith("empresa."):
         valor = str(getattr(solicitud.empresa, campo.split(".", 1)[1], ""))
     elif campo.startswith(PREFIJO_DATOS_TRAMITE):
         valor = str(solicitud.datosTramite.get(campo[len(PREFIJO_DATOS_TRAMITE):], ""))
+    elif separarCampoCurso(campo) is not None:
+        numero, clave = separarCampoCurso(campo)
+        cursos = solicitud.cursos
+        valor = str(cursos[numero - 1].get(clave, "")) if numero <= len(cursos) else ""
     else:
         valor = str(getattr(solicitud, campo, ""))
     return valor if len(valor) <= 28 else f"{valor[:27]}…"
@@ -289,6 +327,28 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
                     etiqueta, value=solicitud.datosTramite.get(adicional.clave, "")
                 )
 
+        # Cursos (p. ej. rectificación de matrícula): tabla editable, una fila por curso.
+        filasCursos: list[dict[str, object]] | None = None
+        if tramiteElegido is not None and tramiteElegido.camposPorCurso:
+            st.markdown("**Cursos**")
+            columnas = [c.clave for c in tramiteElegido.camposPorCurso]
+            filas = [
+                {clave: curso.get(clave, "") for clave in columnas}
+                for _, curso in solicitud.cursosRegistrados()
+            ] or [{clave: "" for clave in columnas}]
+            filasCursos = st.data_editor(
+                filas,
+                num_rows="dynamic",
+                hide_index=True,
+                key="editor_cursos",
+                column_config={
+                    c.clave: st.column_config.TextColumn(c.etiqueta, help=c.pista or None)
+                    for c in tramiteElegido.camposPorCurso
+                },
+            )
+            if tramiteElegido.cobroPorCurso:
+                st.caption(f"{tramiteElegido.montoUnitarioTexto}: el total se calcula por cada fila.")
+
         datosEmpresa: dict[str, str] = {}
         if claveElegida == "carta_presentacion":
             st.markdown("**Centro de prácticas**")
@@ -332,7 +392,20 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
     if datosTramite:
         cambios["datosTramite"] = datosTramite
 
+    if filasCursos is not None:
+        # Mismas reglas que la tabla del chat: al menos un curso y sin datos vacíos.
+        _, erroresCursos = validarFilasCursos(list(filasCursos), tramiteElegido.camposPorCurso)
+        if erroresCursos:
+            st.error(" ".join(erroresCursos))
+            return
+
     solicitud.fusionar(cambios)
+    if filasCursos is not None:
+        # Guardar desde el formulario es una confirmación explícita de la lista: la
+        # tabla reemplaza los cursos (así también se pueden borrar).
+        solicitud.confirmarCursos(list(filasCursos))
+        st.session_state.selectorCursos = None
+        st.session_state.cursosPorConfirmar = None
     solicitud.aplicarValoresDelTramite()
     generarDesdeFormulario(solicitud, configuracion)
 
@@ -427,6 +500,7 @@ def registrarMensajeConDocumento(
             "titulo": titulo,
             "tramiteClave": solicitud.tramiteClave if solicitud else None,
             "adjuntos": list(solicitud.documentosAdjuntos) if solicitud else [],
+            "cantidadCursos": solicitud.cantidadCursos if solicitud else 0,
         }
 
 
@@ -445,6 +519,8 @@ def renderizarHistorial() -> None:
                 st.markdown(mensaje["content"])
             if indice == ultimaPlantilla:
                 renderizarRespaldoPlantilla(plantillas[indice], indice)
+            if indice == st.session_state.selectorCursos:
+                renderizarSelectorCursos(indice)
 
 
 def renderizarRespaldoPlantilla(plantilla: str, indice: int) -> None:
@@ -491,7 +567,7 @@ def renderizarTarjetaFutListo(documento: dict[str, object], indice: int) -> None
               <p class="fut-subtitulo">{nombreTramite}</p>
             </div>
           </div>
-          {construirBloquePago(tramite)}
+          {construirBloquePago(tramite, int(documento.get("cantidadCursos") or 0))}
         </div>
         """,
         unsafe_allow_html=True,
@@ -502,10 +578,16 @@ def renderizarTarjetaFutListo(documento: dict[str, object], indice: int) -> None
     st.markdown(construirPasosSiguientes(tramite, documento.get("adjuntos") or []), unsafe_allow_html=True)
 
 
-def construirBloquePago(tramite) -> str:
-    """Monto y código de pago como datos destacados (o un aviso si no aplica)."""
+def construirBloquePago(tramite, cantidadCursos: int = 0) -> str:
+    """Monto y código de pago como datos destacados (o un aviso si no aplica).
+
+    Si el trámite se cobra por curso, el monto es el total y debajo va una nota con el
+    monto individual ("2 cursos × S/ 8.40 c/u").
+    """
     if tramite is None:
         return ""
+    nota = tramite.detalleMonto(cantidadCursos)
+    notaHtml = f'<span class="fut-dato-nota">{html.escape(nota)}</span>' if nota else ""
     if tramite.llevaCodigoPago:
         codigo = (
             '<span class="fut-dato-etiqueta">Código de pago</span>'
@@ -519,8 +601,9 @@ def construirBloquePago(tramite) -> str:
     return f"""
           <div class="fut-pago">
             <div class="fut-dato">
-              <span class="fut-dato-etiqueta">Monto a pagar</span>
-              <span class="fut-dato-valor">{html.escape(tramite.montoFormateado)}</span>
+              <span class="fut-dato-etiqueta">{"Total a pagar" if nota else "Monto a pagar"}</span>
+              <span class="fut-dato-valor">{html.escape(tramite.montoTotalFormateado(cantidadCursos))}</span>
+              {notaHtml}
             </div>
             <div class="fut-dato">{codigo}</div>
           </div>"""
@@ -532,7 +615,8 @@ def construirPasosSiguientes(tramite, adjuntos: list[str]) -> str:
     if tramite is not None and tramite.monto is not None:
         # El monto y el código ya están destacados arriba: aquí solo va la acción.
         if tramite.llevaCodigoPago:
-            pasos.append("<strong>Paga</strong> en el Banco de la Nación con el código de pago.")
+            verbo = "Paga el total" if tramite.cobroPorCurso else "Paga"
+            pasos.append(f"<strong>{verbo}</strong> en el Banco de la Nación con el código de pago.")
         else:
             pasos.append("<strong>Paga</strong> el monto indicado (no lleva código de pago).")
     pasos.append(
@@ -667,6 +751,11 @@ def procesarEntrada(texto: str) -> None:
                 camposEsperados=st.session_state.camposEsperados,
             )
 
+    publicarRespuesta(respuesta)
+
+
+def publicarRespuesta(respuesta: RespuestaAgente) -> None:
+    """Guarda el estado que devolvió el agente y publica su mensaje en el chat."""
     st.session_state.solicitud = respuesta.solicitud
     st.session_state.advertencias = respuesta.advertencias
     st.session_state.camposEsperados = respuesta.camposPreguntados
@@ -693,7 +782,145 @@ def procesarEntrada(texto: str) -> None:
     # No se puede escribir en el cuadro de mensaje desde aquí: el widget ya se dibujó en
     # esta ejecución. Se deja pendiente y ``principal`` lo aplica antes de dibujarlo.
     st.session_state.plantillaPendiente = respuesta.plantilla or None
+    if respuesta.mostrarSelectorCursos:
+        st.session_state.selectorCursos = len(st.session_state.mensajes) - 1
+        st.session_state.cursosPorConfirmar = None
+        st.session_state.versionTablaCursos += 1
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Tabla de cursos (trámites por asignatura, p. ej. rectificación de matrícula)
+# ---------------------------------------------------------------------------
+def renderizarSelectorCursos(indice: int) -> None:
+    """Tabla para agregar o quitar cursos, dentro del propio mensaje del asistente.
+
+    Flujo en dos pasos, para que el estudiante siempre confirme antes de seguir:
+    1. Edita la tabla (con el total calculado en vivo) y pulsa «Continuar». Si hay
+       filas incompletas o ningún curso, se muestran los errores y no avanza.
+    2. Ve el resumen de cursos y el total, y elige «Sí, son correctos» o «Editar».
+       Solo con el «sí» se guardan los cursos y se pasa a la plantilla de datos.
+    """
+    solicitud: SolicitudFut = st.session_state.solicitud
+    tramite = solicitud.tramite
+    if tramite is None or not tramite.camposPorCurso or solicitud.cursosConfirmados:
+        return
+
+    if st.session_state.cursosPorConfirmar is None:
+        renderizarTablaCursos(solicitud, tramite, indice)
+    else:
+        renderizarConfirmacionCursos(st.session_state.cursosPorConfirmar, tramite, indice)
+
+
+def renderizarTablaCursos(solicitud: SolicitudFut, tramite, indice: int) -> None:
+    """Paso 1: tabla editable + total en vivo + botón «Continuar» con validación."""
+    claves = [c.clave for c in tramite.camposPorCurso]
+    filasIniciales = [
+        {clave: curso.get(clave, "") for clave in claves} for _, curso in solicitud.cursosRegistrados()
+    ] or [{clave: "" for clave in claves}]
+
+    filas = st.data_editor(
+        filasIniciales,
+        num_rows="dynamic",
+        hide_index=True,
+        key=f"tabla_cursos_{indice}_{st.session_state.versionTablaCursos}",
+        column_config={
+            c.clave: st.column_config.TextColumn(c.etiqueta, help=c.pista or None, max_chars=80)
+            for c in tramite.camposPorCurso
+        },
+    )
+    cursos, errores = validarFilasCursos(list(filas), tramite.camposPorCurso)
+
+    if cursos and tramite.cobroPorCurso:
+        resumen = (
+            f'Total: <strong>{html.escape(tramite.montoTotalFormateado(len(cursos)))}</strong>'
+            f' <span>· {html.escape(tramite.detalleMonto(len(cursos)))}</span>'
+        )
+    elif tramite.cobroPorCurso:
+        resumen = f"<span>{html.escape(tramite.montoUnitarioTexto)}. Agrega al menos un curso.</span>"
+    else:
+        resumen = ""
+    if resumen:
+        st.markdown(f'<p class="cursos-total">{resumen}</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="cursos-ayuda">Para agregar un curso, escribe en la fila vacía del final. '
+        "Para quitar uno, marca la casilla a la izquierda de la fila y pulsa el ícono de "
+        "papelera (o la tecla Supr).</p>",
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Continuar", type="primary", key=f"continuar_cursos_{indice}"):
+        if errores:
+            for error in errores:
+                st.error(error)
+            return
+        # Se guarda la lista (aún sin confirmar) para que «Editar» la recupere.
+        solicitud.cursos = cursos
+        st.session_state.cursosPorConfirmar = cursos
+        st.rerun()
+
+
+def renderizarConfirmacionCursos(cursos: list[dict[str, str]], tramite, indice: int) -> None:
+    """Paso 2: resumen de cursos y total; continuar solo con una confirmación explícita."""
+    elementos = "".join(
+        f"<li><span class=\"curso\">{html.escape(c.get('curso', ''))}</span>"
+        f"<span class=\"secciones\">Sección {html.escape(c.get('seccionOrigen', ''))} → "
+        f"{html.escape(c.get('seccionDestino', ''))}</span></li>"
+        for c in cursos
+    )
+    total = ""
+    if tramite.cobroPorCurso:
+        total = (
+            f'<p class="cursos-total">Total a pagar: <strong>'
+            f"{html.escape(tramite.montoTotalFormateado(len(cursos)))}</strong> "
+            f"<span>· {html.escape(tramite.detalleMonto(len(cursos)))}</span></p>"
+        )
+    cantidad = f"{len(cursos)} curso" if len(cursos) == 1 else f"{len(cursos)} cursos"
+    st.markdown(
+        f"""
+        <div class="cursos-confirmar">
+          <p class="cursos-pregunta">¿Confirmas {'este curso' if len(cursos) == 1 else f'estos {cantidad}'}?</p>
+          <ol class="cursos-lista">{elementos}</ol>
+          {total}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    columnaSi, columnaEditar = st.columns(2)
+    with columnaSi:
+        if st.button("Sí, son correctos", type="primary", key=f"confirmar_cursos_{indice}", use_container_width=True):
+            confirmarCursosEnChat(cursos, tramite)
+    with columnaEditar:
+        if st.button("Editar cursos", type="secondary", key=f"editar_cursos_{indice}", use_container_width=True):
+            st.session_state.cursosPorConfirmar = None
+            st.session_state.versionTablaCursos += 1
+            st.rerun()
+
+
+def confirmarCursosEnChat(cursos: list[dict[str, str]], tramite) -> None:
+    """Guarda los cursos confirmados, lo deja escrito en el chat y pasa al siguiente paso."""
+    solicitud: SolicitudFut = st.session_state.solicitud
+    errores = solicitud.confirmarCursos(cursos)
+    if errores:  # no debería ocurrir: ya se validó en «Continuar»
+        st.error(" ".join(errores))
+        return
+
+    lineas = [
+        f"- {c['curso']}: sección {c['seccionOrigen']} → {c['seccionDestino']}" for c in cursos
+    ]
+    resumen = "Confirmo los cursos a rectificar:\n" + "\n".join(lineas)
+    if tramite.cobroPorCurso:
+        resumen += f"\n\nTotal: {tramite.resumirCosto(len(cursos))}"
+    st.session_state.mensajes.append({"role": "user", "content": resumen})
+    st.session_state.selectorCursos = None
+    st.session_state.cursosPorConfirmar = None
+
+    with st.spinner("Guardando tus cursos…"):
+        agente = obtenerAgente()
+        respuesta = agente.continuarTrasConfirmarCursos(
+            solicitud, st.session_state.mensajes[:-1], resumen
+        )
+    publicarRespuesta(respuesta)
 
 
 # ---------------------------------------------------------------------------

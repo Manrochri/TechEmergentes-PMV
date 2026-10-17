@@ -14,11 +14,23 @@ el formulario, se escribe encima de él. El reverso con la lista de trámites se
 
 - **Chat con el estudiante.** El agente identifica el trámite entre los 22 del tarifario vigente
   de la FIIS y le indica el monto y el código de pago del Banco de la Nación.
-- **Plantilla para copiar y rellenar.** En cuanto conoce el trámite, el asistente muestra en el
-  chat, dentro de un recuadro con botón de copiar, **todos** los datos que faltan en formato
-  `Etiqueta: ` (uno por renglón, con los opcionales marcados como tales). El estudiante la
-  copia, escribe cada dato después de los dos puntos y la envía en un solo mensaje. Si algún
-  dato no pasa la validación, se descarta y vuelve a aparecer en la plantilla siguiente.
+- **Plantilla escrita en el cuadro de mensaje.** En cuanto conoce el trámite, el asistente deja
+  escrita **en el propio cuadro donde el estudiante escribe** una plantilla con **todos** los
+  datos que faltan en formato `Etiqueta: ` (uno por renglón, con los opcionales marcados como
+  tales). El estudiante solo completa cada renglón después de los dos puntos y la envía. Si
+  envía antes de terminar o algún dato no pasa la validación, el asistente vuelve a dejar en el
+  cuadro solo lo que falta. Como respaldo, el último mensaje trae un desplegable *"Ver la
+  plantilla de datos"* con un botón para volver a escribirla en el cuadro.
+- **Rectificación de varios cursos con cobro por curso.** Al reconocer la rectificación de
+  matrícula, el asistente muestra **dentro del chat una tabla** (curso, sección de origen,
+  sección de destino) donde el estudiante agrega o quita cursos, con el **total calculado en
+  vivo** (*S/ 16.80 · 2 cursos × S/ 8.40 c/u*). Al pulsar «Continuar» se valida que haya al
+  menos un curso, que ninguna fila tenga datos vacíos y que la sección de destino sea distinta
+  de la de origen. Luego **siempre pide confirmación** («¿Confirmas estos 2 cursos?» → «Sí, son
+  correctos» / «Editar cursos»). Solo después de confirmar aparece la plantilla con los datos
+  personales. El total con la nota del monto individual se muestra en la barra lateral y en la
+  tarjeta final, y los cursos se imprimen en la fundamentación, uno por renglón. La lista
+  también se puede corregir en la tabla del formulario manual (con las mismas validaciones).
 - **Completa el FUT automáticamente.** Dependencia de destino, tipo de solicitante, datos
   personales, domicilio, contacto, fundamentación, documentos adjuntos, folios, lugar y fecha.
 - **Descarga e impresión desde el propio chat.** Cuando el formulario queda completo, el mensaje
@@ -56,6 +68,7 @@ el formulario, se escribe encima de él. El reverso con la lista de trámites se
 
 | Componente | Versión | Nota |
 |---|---|---|
+| Streamlit | 1.50 o superior | Necesario para escribir la plantilla en el cuadro de mensaje (requiere 1.47+) |
 | Windows | 10 u 11 | También funciona en Linux y macOS |
 | Python | 3.11 o superior | [python.org/downloads](https://www.python.org/downloads/) — marca *Add python.exe to PATH* |
 | Ollama | 0.5 o superior | [ollama.com/download](https://ollama.com/download) |
@@ -148,8 +161,9 @@ Se abre en `http://localhost:8501`. Para detenerla, `Ctrl + C` en la terminal.
 1. Escribe lo que necesitas, en lenguaje natural:
    *"Necesito una carta de presentación para mis prácticas en una consultora"*.
 2. El asistente reconoce el trámite, muestra el monto y el código de pago en la barra lateral,
-   y te muestra una plantilla con todos los datos que necesita. Cópiala con el botón de copiar
-   del recuadro, completa cada renglón después de los dos puntos y envíala en un solo mensaje.
+   y te deja escrita en el cuadro de mensaje una plantilla con todos los datos que necesita.
+   Completa cada renglón después de los dos puntos (muévete con las flechas o haciendo clic;
+   Enter envía el mensaje) y envíala.
 3. Cuando el expediente está completo, el mensaje trae dos botones: **Descargar PDF** y
    **Abrir e imprimir** (abre el FUT en una pestaña nueva; se imprime con el ícono del visor
    del navegador o Ctrl+P).
@@ -292,6 +306,17 @@ aclaraciones entre paréntesis están en `ORDEN_PLANTILLA`, `ETIQUETAS_PLANTILLA
 `PISTAS_PLANTILLA` de `src/plantillas_prompt.py`. Si cambias una etiqueta, agrégala también
 (sin tildes y en minúsculas) a `_ETIQUETAS_A_CAMPO` de `src/extractor_determinista.py`;
 `tests/test_plantilla_datos.py` falla si quedan desincronizadas.
+
+**Cobrar por curso en otro trámite.** En `src/catalogo_tramites.py`, marca el trámite con
+`cobroPorCurso=True` y define `camposPorCurso` (como en `rectificacion_matricula`). Los
+trámites "por asignatura" del tarifario (retiro, convalidación, examen de aplazado) son
+candidatos naturales.
+
+**Pedir datos extra en un trámite.** Añade entradas `CampoAdicional(clave, etiqueta, pista)` a
+`camposAdicionales` del trámite en `src/catalogo_tramites.py` (como en
+`rectificacion_matricula`). Basta con eso: el dato pasa a ser obligatorio para ese trámite,
+aparece en la plantilla del chat y en el formulario manual, el extractor reconoce su etiqueta y
+se imprime en la fundamentación como `Etiqueta: valor`.
 
 **Cambiar montos o añadir un trámite.** Edita `src/catalogo_tramites.py`: cada trámite es una
 entrada de `CATALOGO` con su concepto, monto, código de pago, dependencia de destino, sumilla y

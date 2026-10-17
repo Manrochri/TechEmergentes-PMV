@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .catalogo_tramites import listarCamposAdicionales
+from .catalogo_tramites import listarCamposAdicionales, listarCamposPorCurso
 from .validaciones import (
     esCorreoValido,
     esDniValido,
@@ -100,14 +100,21 @@ for _campoAdicional in listarCamposAdicionales():
         normalizarClave(_campoAdicional.etiqueta), f"tramite.{_campoAdicional.clave}"
     )
 
+# Etiquetas de los datos por curso (``Tramite.camposPorCurso``): "Curso", "Sección de
+# origen", "Sección de destino". Admiten un número de curso detrás ("Curso 2:"); ver
+# ``_agruparCursos`` para cómo se asigna cada valor a su curso.
+for _campoCurso in listarCamposPorCurso():
+    _ETIQUETAS_A_CAMPO.setdefault(normalizarClave(_campoCurso.etiqueta), f"curso.{_campoCurso.clave}")
+
 #: Patrón que reconoce cualquiera de las etiquetas de arriba seguida de ":" o "-".
-#: Entre la etiqueta y los dos puntos admite una aclaración entre paréntesis, tal como
-#: la muestra la plantilla del chat: "Celular (9 dígitos): ..." o "Teléfono fijo
-#: (opcional): ...". ``(?<!\w)`` evita reconocer una etiqueta en medio de otra palabra.
+#: Detrás de la etiqueta admite un número de curso ("Curso 2:") y una aclaración entre
+#: paréntesis, tal como la muestra la plantilla del chat: "Celular (9 dígitos): ..." o
+#: "Teléfono fijo (opcional): ...". ``(?<!\w)`` evita reconocer una etiqueta en medio de
+#: otra palabra.
 _PATRON_ETIQUETA = re.compile(
     r"(?<!\w)("
     + "|".join(re.escape(e) for e in sorted(_ETIQUETAS_A_CAMPO, key=len, reverse=True))
-    + r")\s*(?:\([^)\n]*\))?\s*[:\-][ \t]*",
+    + r")(?:[ \t]+(\d{1,2}))?\s*(?:\([^)\n]*\))?\s*[:\-][ \t]*",
     re.IGNORECASE,
 )
 
@@ -126,17 +133,21 @@ def _contienePalabra(contexto: str, palabras: tuple[str, ...]) -> bool:
     return any(palabra in contexto for palabra in palabras)
 
 
-def _segmentosEtiquetados(mensaje: str) -> list[tuple[str, int, int]]:
-    """Lista de ``(campo, inicioValor, finValor)`` de cada "Etiqueta: valor" del mensaje."""
+def _segmentosEtiquetados(mensaje: str) -> list[tuple[str, int | None, int, int]]:
+    """Lista de ``(campo, número, inicioValor, finValor)`` de cada "Etiqueta: valor".
+
+    ``número`` es el número escrito tras la etiqueta ("Curso 2:" -> 2) o ``None``.
+    """
     normalizado = quitarTildes(mensaje).lower()
     coincidencias = list(_PATRON_ETIQUETA.finditer(normalizado))
-    segmentos: list[tuple[str, int, int]] = []
+    segmentos: list[tuple[str, int | None, int, int]] = []
     for indice, coincidencia in enumerate(coincidencias):
         campo = _ETIQUETAS_A_CAMPO.get(coincidencia.group(1).lower())
         if not campo:
             continue
+        numero = int(coincidencia.group(2)) if coincidencia.group(2) else None
         finValor = coincidencias[indice + 1].start() if indice + 1 < len(coincidencias) else len(mensaje)
-        segmentos.append((campo, coincidencia.end(), finValor))
+        segmentos.append((campo, numero, coincidencia.end(), finValor))
     return segmentos
 
 
@@ -149,7 +160,7 @@ def _ocultarValoresEtiquetados(mensaje: str) -> str:
     como correo de la empresa). Conserva la longitud para que el contexto siga alineado.
     """
     caracteres = list(mensaje)
-    for _, inicio, fin in _segmentosEtiquetados(mensaje):
+    for _, _, inicio, fin in _segmentosEtiquetados(mensaje):
         for posicion in range(inicio, fin):
             if not caracteres[posicion].isspace():
                 caracteres[posicion] = " "
@@ -168,9 +179,26 @@ def extraerSegmentosEtiquetados(mensaje: str) -> dict[str, object]:
     cambios: dict[str, object] = {}
     empresa: dict[str, str] = {}
     datosTramite: dict[str, str] = {}
+    cursos: dict[int, dict[str, str]] = {}
+    cursoActual = 0
 
-    for campo, inicioValor, finValor in _segmentosEtiquetados(mensaje):
+    for campo, numero, inicioValor, finValor in _segmentosEtiquetados(mensaje):
         valor = limpiarTexto(mensaje[inicioValor:finValor]).strip(" .,-")
+        if campo.startswith("curso."):
+            # Cada dato va al curso de su número ("Sección de origen 2:"). Sin número,
+            # una etiqueta "Curso:" abre un curso nuevo y las secciones que la siguen
+            # pertenecen a ese mismo curso, así que repetir el bloque sin numerar
+            # también funciona.
+            clave = campo.split(".", 1)[1]
+            if numero:
+                cursoActual = numero
+            elif clave == "curso":
+                cursoActual += 1
+            else:
+                cursoActual = cursoActual or 1
+            if valor:
+                cursos.setdefault(cursoActual, {})[clave] = valor
+            continue
         if not valor:
             continue
         if campo.startswith("empresa."):
@@ -184,6 +212,8 @@ def extraerSegmentosEtiquetados(mensaje: str) -> dict[str, object]:
         cambios["empresa"] = empresa
     if datosTramite:
         cambios["datosTramite"] = datosTramite
+    if cursos:
+        cambios["cursos"] = cursos
     return cambios
 
 
@@ -232,6 +262,15 @@ def extraerCamposDeterministas(mensaje: str, solicitud: "SolicitudFut") -> dict[
     }
     if tramiteEtiquetado:
         cambios["datosTramite"] = tramiteEtiquetado
+    # Cursos: solo se completan datos vacíos, igual que el resto de campos.
+    cursosEtiquetados: dict[int, dict[str, str]] = {}
+    for numeroCurso, datosCurso in etiquetados.pop("cursos", {}).items():
+        existente = solicitud.cursos[numeroCurso - 1] if numeroCurso <= len(solicitud.cursos) else {}
+        nuevos = {k: v for k, v in datosCurso.items() if not existente.get(k)}
+        if nuevos:
+            cursosEtiquetados[numeroCurso] = nuevos
+    if cursosEtiquetados:
+        cambios["cursos"] = cursosEtiquetados
     for campo, valor in etiquetados.items():
         if not getattr(solicitud, campo, None):
             cambios[campo] = valor

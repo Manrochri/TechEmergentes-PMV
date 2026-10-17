@@ -12,7 +12,9 @@ from .catalogo_tramites import (
     ESCUELAS_PROFESIONALES,
     TRAMITES_POR_CLAVE,
     listarCamposAdicionales,
+    listarCamposPorCurso,
     obtenerCampoAdicional,
+    obtenerCampoPorCurso,
     resumirCatalogoParaModelo,
 )
 from .coordenadas_fut import ETIQUETAS
@@ -109,12 +111,36 @@ PISTAS_PLANTILLA: dict[str, str] = {
 }
 
 
-def construirPlantillaDeDatos(campos: list[str]) -> str:
-    """Renglones "Etiqueta: " listos para copiar, uno por dato, en el orden recibido."""
+def _separarCampoCurso(campo: str) -> tuple[int, str] | None:
+    """``"curso.2.seccionOrigen"`` -> ``(2, "seccionOrigen")``; ``None`` si no es de curso."""
+    partes = campo.split(".")
+    if len(partes) == 3 and partes[0] == "curso" and partes[1].isdigit():
+        return int(partes[1]), partes[2]
+    return None
+
+
+def construirPlantillaDeDatos(campos: list[str], opcionales: frozenset[str] | set[str] = frozenset()) -> str:
+    """Renglones "Etiqueta: " listos para rellenar, uno por dato, en el orden recibido.
+
+    Los datos por curso llevan su número ("Curso 2 (nombre o código): "), que es lo que
+    permite al extractor saber a qué curso pertenece cada sección. ``opcionales`` marca
+    renglones extra que se pueden dejar en blanco (p. ej. el bloque para otro curso).
+    """
     renglones: list[str] = []
     for campo in campos:
+        datoCurso = _separarCampoCurso(campo)
+        if datoCurso is not None:
+            numero, clave = datoCurso
+            definicion = obtenerCampoPorCurso(clave)
+            etiqueta = f"{definicion.etiqueta if definicion else clave} {numero}"
+            if campo in opcionales:
+                pista = "opcional, si rectificas otro curso" if clave == "curso" else "opcional"
+            else:
+                pista = definicion.pista if definicion else ""
+            renglones.append(f"{etiqueta} ({pista}): " if pista else f"{etiqueta}: ")
+            continue
         etiqueta = ETIQUETAS_PLANTILLA.get(campo, describirCampo(campo))
-        if campo in CAMPOS_OPCIONALES_PLANTILLA:
+        if campo in CAMPOS_OPCIONALES_PLANTILLA or campo in opcionales:
             pista = "opcional"
         elif campo.startswith("tramite."):
             adicional = obtenerCampoAdicional(campo.split(".", 1)[1])
@@ -144,6 +170,15 @@ def construirEsquemaExtraccion() -> dict[str, Any]:
         "type": "object",
         "properties": {campo: {"type": "string"} for campo in _CAMPOS_EMPRESA},
     }
+    camposCurso = listarCamposPorCurso()
+    if camposCurso:
+        propiedades["cursos"] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {campo.clave: {"type": "string"} for campo in camposCurso},
+            },
+        }
     adicionales = listarCamposAdicionales()
     if adicionales:
         propiedades["datosTramite"] = {
@@ -174,6 +209,9 @@ prácticas: son los datos del centro de prácticas, NO los del estudiante.
 7. No confundas el correo del estudiante con el correo de la empresa.
 8. El bloque `datosTramite` guarda datos propios de algunos trámites: {datosTramite}. \
 Inclúyelos solo si el estudiante los dio de forma explícita.
+9. `cursos` es una lista con un elemento por cada curso que el estudiante quiere tramitar \
+(p. ej. en la rectificación de matrícula: `curso`, `seccionOrigen` y `seccionDestino`), en el \
+orden en que los mencionó. Inclúyela solo si dio esos datos de forma explícita.
 
 Catálogo de trámites disponibles:
 {catalogo}
@@ -194,6 +232,10 @@ plantilla con TODOS los datos que faltan, para que solo la rellene y la envíe. 
 los datos, NO copies la plantilla y NO pidas datos sueltos: solo responde brevemente a lo que \
 dijo el estudiante (si hizo una pregunta, contéstala) e invítalo a completar la plantilla que \
 ya tiene en su cuadro de mensaje.
+- Si entre los datos que faltan figura "Cursos a rectificar", el sistema mostrará debajo de tu \
+respuesta una tabla para que el estudiante agregue sus cursos. Responde en una sola frase breve \
+y NO pidas cursos, secciones ni datos personales: las instrucciones de la tabla ya las da el \
+sistema.
 - Nunca inventas requisitos, montos ni plazos: usa solo lo que aparece en el contexto.
 - No repites datos que el estudiante ya confirmó, salvo que él pida revisarlos.
 - No uses markdown pesado ni encabezados; escribe en prosa corta.
@@ -287,8 +329,16 @@ def describirCampo(clave: str) -> str:
     if clave.startswith("tramite."):
         adicional = obtenerCampoAdicional(clave.split(".", 1)[1])
         return adicional.etiqueta if adicional else clave
+    datoCurso = _separarCampoCurso(clave)
+    if datoCurso is not None:
+        numero, nombre = datoCurso
+        definicion = obtenerCampoPorCurso(nombre)
+        etiqueta = definicion.etiqueta if definicion else nombre
+        return f"{etiqueta} {numero}" if nombre == "curso" else f"{etiqueta} (curso {numero})"
     if clave == "tramiteClave":
         return "Trámite a realizar"
+    if clave == "cursos":
+        return "Cursos a rectificar"
     return ETIQUETAS.get(clave, clave)
 
 
