@@ -20,7 +20,7 @@ from src.agente_fut import AgenteFut, RespuestaAgente
 from src.catalogo_tramites import ESCUELAS_PROFESIONALES, listarTramites, obtenerTramite
 from src.configuracion import Configuracion, obtenerConfiguracion
 from src.llenador_fut import ErrorLlenadoFut, generarNombreArchivo, rellenarFut
-from src.modelos import CAMPOS_OBLIGATORIOS, SolicitudFut
+from src.modelos import CAMPOS_OBLIGATORIOS, PREFIJO_DATOS_TRAMITE, SolicitudFut
 from src.plantillas_prompt import MENSAJE_BIENVENIDA, describirCampo
 from src.puente_secretos import sincronizarSecretosDeStreamlit
 
@@ -36,6 +36,10 @@ logging.basicConfig(
 
 #: Turnos consecutivos sin avance a partir de los cuales se sugiere el panel manual.
 TURNOS_SIN_AVANCE_PARA_SUGERIR: int = 2
+
+#: Clave de ``st.chat_input``. Asignar texto a ``st.session_state[CLAVE_ENTRADA_CHAT]``
+#: ANTES de dibujar el widget lo deja escrito en el cuadro de mensaje (Streamlit 1.47+).
+CLAVE_ENTRADA_CHAT: str = "entrada_chat"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +93,12 @@ def inicializarEstado(configuracion: Configuracion) -> None:
         st.session_state.turnosSinAvance = 0
     if "camposEsperados" not in st.session_state:
         st.session_state.camposEsperados = []
+    if "plantillas" not in st.session_state:
+        # indice del mensaje -> plantilla "Etiqueta: " que se dejó en el cuadro de mensaje
+        st.session_state.plantillas = {}
+    if "plantillaPendiente" not in st.session_state:
+        # texto a escribir en el cuadro de mensaje en la próxima ejecución
+        st.session_state.plantillaPendiente = None
 
 
 def reiniciarConversacion(configuracion: Configuracion) -> None:
@@ -99,6 +109,8 @@ def reiniciarConversacion(configuracion: Configuracion) -> None:
     st.session_state.advertencias = []
     st.session_state.turnosSinAvance = 0
     st.session_state.camposEsperados = []
+    st.session_state.plantillas = {}
+    st.session_state.plantillaPendiente = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +194,10 @@ def renderizarAvance(solicitud: SolicitudFut) -> None:
     """Barra de progreso y lista de verificación de los campos obligatorios."""
     faltantes = set(solicitud.camposFaltantes())
     obligatorios = list(CAMPOS_OBLIGATORIOS)
+    if solicitud.tramite is not None:
+        obligatorios += [
+            f"{PREFIJO_DATOS_TRAMITE}{c.clave}" for c in solicitud.tramite.camposAdicionales
+        ]
     if solicitud.esCartaPresentacion:
         obligatorios += [
             "empresa.nombreInstitucion",
@@ -220,6 +236,8 @@ def obtenerValorLegible(solicitud: SolicitudFut, campo: str) -> str:
         return ""
     if campo.startswith("empresa."):
         valor = str(getattr(solicitud.empresa, campo.split(".", 1)[1], ""))
+    elif campo.startswith(PREFIJO_DATOS_TRAMITE):
+        valor = str(solicitud.datosTramite.get(campo[len(PREFIJO_DATOS_TRAMITE):], ""))
     else:
         valor = str(getattr(solicitud, campo, ""))
     return valor if len(valor) <= 28 else f"{valor[:27]}…"
@@ -257,6 +275,18 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
         celular = st.text_input("Celular", value=solicitud.celular)
         correo = st.text_input("Correo electrónico", value=solicitud.correoElectronico)
         dependencia = st.text_input("Dependencia a quien se dirige", value=solicitud.dependencia)
+
+        # Datos propios del trámite (p. ej. curso y secciones en la rectificación de matrícula).
+        # Como en el bloque de la empresa, aparecen al guardar con el trámite ya elegido.
+        datosTramite: dict[str, str] = {}
+        tramiteElegido = obtenerTramite(claveElegida)
+        if tramiteElegido is not None and tramiteElegido.camposAdicionales:
+            st.markdown(f"**Datos de {tramiteElegido.nombre.lower()}**")
+            for adicional in tramiteElegido.camposAdicionales:
+                etiqueta = f"{adicional.etiqueta} ({adicional.pista})" if adicional.pista else adicional.etiqueta
+                datosTramite[adicional.clave] = st.text_input(
+                    etiqueta, value=solicitud.datosTramite.get(adicional.clave, "")
+                )
 
         datosEmpresa: dict[str, str] = {}
         if claveElegida == "carta_presentacion":
@@ -298,6 +328,8 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
     }
     if datosEmpresa:
         cambios["empresa"] = datosEmpresa
+    if datosTramite:
+        cambios["datosTramite"] = datosTramite
 
     solicitud.fusionar(cambios)
     solicitud.aplicarValoresDelTramite()
@@ -333,6 +365,7 @@ def generarDesdeFormulario(solicitud: SolicitudFut, configuracion: Configuracion
     nombreArchivo = generarNombreArchivo(solicitud)
     st.session_state.turnosSinAvance = 0
     st.session_state.camposEsperados = []
+    st.session_state.plantillaPendiente = None
     registrarMensajeConDocumento(
         "Actualicé tus datos y volví a generar el FUT. Descárgalo o ábrelo para imprimir aquí abajo.",
         pdf,
@@ -379,12 +412,29 @@ def registrarMensajeConDocumento(texto: str, pdf: bytes | None, nombreArchivo: s
 
 def renderizarHistorial() -> None:
     """Dibuja toda la conversación, con el botón de descarga en su mensaje original."""
+    plantillas: dict[int, str] = st.session_state.plantillas
+    ultimaPlantilla = max(plantillas) if plantillas else None
     for indice, mensaje in enumerate(st.session_state.mensajes):
         with st.chat_message(mensaje["role"]):
             st.markdown(mensaje["content"])
             documento = st.session_state.documentos.get(indice)
             if documento:
                 renderizarDescarga(documento, indice)
+            if indice == ultimaPlantilla:
+                renderizarRespaldoPlantilla(plantillas[indice], indice)
+
+
+def renderizarRespaldoPlantilla(plantilla: str, indice: int) -> None:
+    """Respaldo por si el estudiante borró la plantilla del cuadro de mensaje.
+
+    Solo se muestra en el último mensaje que trajo plantilla (las anteriores ya no
+    reflejan lo que falta).
+    """
+    with st.expander("Ver la plantilla de datos"):
+        st.code(plantilla, language=None)
+        if st.button("Volver a escribirla en el cuadro de mensaje", key=f"replantilla_{indice}"):
+            st.session_state.plantillaPendiente = plantilla
+            st.rerun()
 
 
 def renderizarDescarga(documento: dict[str, object], indice: int) -> None:
@@ -522,6 +572,12 @@ def procesarEntrada(texto: str) -> None:
         )
 
     registrarMensajeConDocumento(mensaje, respuesta.pdf, respuesta.nombreArchivo)
+    if respuesta.plantilla:
+        indice = len(st.session_state.mensajes) - 1
+        st.session_state.plantillas[indice] = respuesta.plantilla
+    # No se puede escribir en el cuadro de mensaje desde aquí: el widget ya se dibujó en
+    # esta ejecución. Se deja pendiente y ``principal`` lo aplica antes de dibujarlo.
+    st.session_state.plantillaPendiente = respuesta.plantilla or None
     st.rerun()
 
 
@@ -542,7 +598,13 @@ def principal() -> None:
     for advertencia in st.session_state.advertencias:
         st.warning(advertencia)
 
-    entrada = st.chat_input("Escribe tu consulta o tus datos…")
+    # Deja la plantilla de datos escrita en el cuadro de mensaje para que el estudiante
+    # solo la rellene. Debe asignarse antes de crear el widget.
+    if st.session_state.plantillaPendiente:
+        st.session_state[CLAVE_ENTRADA_CHAT] = st.session_state.plantillaPendiente
+        st.session_state.plantillaPendiente = None
+
+    entrada = st.chat_input("Escribe tu consulta o tus datos…", key=CLAVE_ENTRADA_CHAT)
     if entrada:
         procesarEntrada(entrada)
 

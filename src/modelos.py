@@ -18,6 +18,7 @@ from .catalogo_tramites import (
     FACULTAD_PREDETERMINADA,
     NUMERAL_OTROS,
     Tramite,
+    normalizarEscuela,
     obtenerTramite,
 )
 
@@ -37,6 +38,10 @@ CAMPOS_OBLIGATORIOS: tuple[str, ...] = (
     "celular",
     "correoElectronico",
 )
+
+#: Prefijo de los datos propios de un trámite (ver ``Tramite.camposAdicionales``) en
+#: las listas de campos faltantes, p. ej. ``"tramite.curso"``.
+PREFIJO_DATOS_TRAMITE: str = "tramite."
 
 #: Campos adicionales obligatorios cuando el trámite es la carta de presentación.
 CAMPOS_OBLIGATORIOS_EMPRESA: tuple[str, ...] = (
@@ -143,11 +148,20 @@ class SolicitudFut(BaseModel):
     # Solo para la carta de presentación
     empresa: DatosEmpresa = Field(default_factory=DatosEmpresa)
 
+    # Datos propios del trámite (clave de CampoAdicional -> valor), p. ej. el curso y
+    # las secciones de origen y destino en la rectificación de matrícula.
+    datosTramite: dict[str, str] = Field(default_factory=dict)
+
     # ------------------------------------------------------------------ validadores
     @field_validator("apellidosNombres", mode="before")
     @classmethod
     def normalizarNombres(cls, valor: object) -> str:
         return val.aMayusculas(str(valor or ""))
+
+    @field_validator("escuelaProfesional", mode="before")
+    @classmethod
+    def normalizarEscuelaProfesional(cls, valor: object) -> str:
+        return normalizarEscuela(str(valor or ""))
 
     @field_validator("celular", mode="before")
     @classmethod
@@ -183,9 +197,31 @@ class SolicitudFut(BaseModel):
     def camposFaltantes(self) -> list[str]:
         """Lista ordenada de campos obligatorios que aún faltan."""
         faltantes = [c for c in CAMPOS_OBLIGATORIOS if not self._tieneValor(c)]
+        faltantes += [f"{PREFIJO_DATOS_TRAMITE}{c}" for c in self.camposAdicionalesFaltantes()]
         if self.esCartaPresentacion:
             faltantes += [f"empresa.{c}" for c in self.empresa.camposFaltantes()]
         return faltantes
+
+    def camposAdicionalesFaltantes(self) -> list[str]:
+        """Claves de los datos propios del trámite actual que siguen vacíos."""
+        tramite = self.tramite
+        if tramite is None:
+            return []
+        return [
+            c.clave for c in tramite.camposAdicionales
+            if not str(self.datosTramite.get(c.clave, "")).strip()
+        ]
+
+    def lineasDatosTramite(self) -> list[str]:
+        """Renglones "Etiqueta: valor" de los datos propios del trámite actual."""
+        tramite = self.tramite
+        if tramite is None:
+            return []
+        return [
+            f"{c.etiqueta}: {self.datosTramite.get(c.clave, '')}"
+            for c in tramite.camposAdicionales
+            if str(self.datosTramite.get(c.clave, "")).strip()
+        ]
 
     def _tieneValor(self, campo: str) -> bool:
         valor = getattr(self, campo, None)
@@ -217,6 +253,23 @@ class SolicitudFut(BaseModel):
             errores.update({f"empresa.{k}": v for k, v in self.empresa.erroresDeFormato().items()})
         return errores
 
+    def limpiarCampos(self, campos: list[str]) -> None:
+        """Vacía los campos indicados (p. ej. los que no pasaron la validación).
+
+        Así vuelven a figurar como faltantes, reaparecen en la plantilla del chat y el
+        extractor determinista puede capturar el valor corregido en el siguiente turno
+        (ese extractor nunca sobrescribe un campo que ya tiene valor).
+        """
+        for campo in campos:
+            if campo.startswith(PREFIJO_DATOS_TRAMITE):
+                self.datosTramite.pop(campo[len(PREFIJO_DATOS_TRAMITE):], None)
+            elif campo.startswith("empresa."):
+                nombre = campo.split(".", 1)[1]
+                if nombre in DatosEmpresa.model_fields:
+                    setattr(self.empresa, nombre, "")
+            elif campo in type(self).model_fields and isinstance(getattr(self, campo, None), str):
+                setattr(self, campo, "")
+
     # ------------------------------------------------------------------ derivaciones
     def aplicarValoresDelTramite(self) -> None:
         """Rellena dependencia, sumilla, numeral y adjuntos sugeridos según el trámite."""
@@ -243,7 +296,9 @@ class SolicitudFut(BaseModel):
         """Arma el texto del campo ``Fundamentación de lo Solicitado``.
 
         Para la carta de presentación se antepone el encabezado y se añade, de forma
-        obligatoria, el bloque de datos del centro de prácticas exigido por la FIIS.
+        obligatoria, el bloque de datos del centro de prácticas exigido por la FIIS. Si el
+        trámite tiene datos propios (p. ej. curso y secciones en la rectificación de
+        matrícula), se añaden debajo del encabezado como "Etiqueta: valor".
         """
         tramite = self.tramite
         encabezado = val.limpiarTexto(textoBase)
@@ -261,10 +316,9 @@ class SolicitudFut(BaseModel):
                     f"documentos requeridos."
                 )
 
-        if not self.esCartaPresentacion:
-            return encabezado
-
-        lineas = [encabezado, *self.empresa.aLineasFundamentacion()]
+        lineas = [encabezado, *self.lineasDatosTramite()]
+        if self.esCartaPresentacion:
+            lineas += self.empresa.aLineasFundamentacion()
         return "\n".join(linea for linea in lineas if linea.strip())
 
     def aCamposDelFormulario(self) -> dict[str, str]:
@@ -300,7 +354,9 @@ class SolicitudFut(BaseModel):
         modelo de lenguaje nunca borre información ya confirmada por el estudiante.
         """
         modificados: list[str] = []
+        cambios = dict(cambios)  # no alterar el diccionario del llamador
         datosEmpresa = cambios.pop("empresa", None)
+        datosTramite = cambios.pop("datosTramite", None)
 
         for clave, valor in cambios.items():
             if clave not in type(self).model_fields or valor in (None, "", []):
@@ -321,10 +377,19 @@ class SolicitudFut(BaseModel):
                     continue
                 modificados.append(f"empresa.{clave}")
 
+        if isinstance(datosTramite, dict):
+            for clave, valor in datosTramite.items():
+                texto = val.limpiarTexto(str(valor or ""))
+                if not texto:
+                    continue
+                self.datosTramite[str(clave)] = texto
+                modificados.append(f"{PREFIJO_DATOS_TRAMITE}{clave}")
+
         return modificados
 
 
 __all__ = [
+    "PREFIJO_DATOS_TRAMITE",
     "TipoSolicitante",
     "CAMPOS_OBLIGATORIOS",
     "CAMPOS_OBLIGATORIOS_EMPRESA",

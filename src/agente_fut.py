@@ -9,7 +9,7 @@ produce un FUT incorrecto.
 
 Ciclo de un turno:
     mensaje -> extraer datos -> fusionar estado -> validar -> ¿falta algo?
-        sí  -> redactar pregunta
+        sí  -> dejar en el cuadro de mensaje una plantilla con TODOS los datos que faltan
         no  -> generar PDF y ofrecer la descarga
 """
 
@@ -21,11 +21,14 @@ from dataclasses import dataclass, field
 
 from .catalogo_tramites import Tramite, TRAMITES_POR_CLAVE, buscarTramitePorTexto
 from .configuracion import Configuracion, obtenerConfiguracion
-from .extractor_determinista import extraerCamposDeterministas
+from .extractor_determinista import contieneEtiquetas, extraerCamposDeterministas
 from .llenador_fut import ErrorLlenadoFut, generarNombreArchivo, guardarFut, rellenarFut
-from .modelos import SolicitudFut
+from .modelos import PREFIJO_DATOS_TRAMITE, SolicitudFut
 from .plantillas_prompt import (
+    CAMPOS_OPCIONALES_PLANTILLA,
+    ORDEN_PLANTILLA,
     construirEsquemaExtraccion,
+    construirPlantillaDeDatos,
     construirPromptConversacion,
     construirPromptExtraccion,
     construirPromptFundamentacion,
@@ -37,7 +40,13 @@ from .validaciones import limpiarTexto, normalizarClave
 
 registrador = logging.getLogger(__name__)
 
-MAXIMO_CAMPOS_A_PEDIR: int = 2
+#: Texto que acompaña a la plantilla que la interfaz deja escrita en el cuadro de mensaje.
+INSTRUCCIONES_PLANTILLA: str = (
+    "Te dejé la plantilla escrita en el cuadro de mensaje de abajo: completa cada dato "
+    "después de los dos puntos y envíala. Para pasar de un renglón a otro usa las flechas "
+    "o haz clic en el renglón; si presionas Enter antes de terminar, se envía lo que lleves "
+    "y te vuelvo a dejar solo lo que falte."
+)
 
 #: Campos a los que nunca se les asigna el mensaje completo como respuesta directa:
 #: el trámite necesita coincidir exactamente con una clave del catálogo, y asignarle
@@ -89,6 +98,9 @@ class RespuestaAgente:
     #: Campos que se acaban de preguntar; el llamador debe pasarlos de vuelta en el
     #: siguiente turno como ``camposEsperados`` para habilitar la asignación directa.
     camposPreguntados: list[str] = field(default_factory=list)
+    #: Plantilla "Etiqueta: " con los datos que faltan. La interfaz la escribe en el
+    #: cuadro de mensaje del chat para que el estudiante solo la rellene y la envíe.
+    plantilla: str = ""
 
 
 class AgenteFut:
@@ -143,28 +155,34 @@ class AgenteFut:
         self.identificarTramiteSiFalta(mensaje, solicitud, actualizados)
         solicitud.aplicarValoresDelTramite()
 
+        # Un dato con formato inválido se vacía para que vuelva a figurar como faltante:
+        # reaparece en la plantilla y el valor corregido se captura en el siguiente turno.
         errores = solicitud.erroresDeFormato()
+        correccion = ""
         if errores:
-            campoConError = next(iter(errores))
-            return RespuestaAgente(
-                mensaje=self.redactarCorreccion(errores),
-                solicitud=solicitud,
-                camposActualizados=actualizados,
-                advertencias=advertencias,
-                camposPreguntados=[campoConError],
-            )
+            solicitud.limpiarCampos(list(errores))
+            actualizados = [c for c in actualizados if c not in errores]
+            correccion = self.redactarCorreccion(errores)
 
         faltantes = solicitud.camposFaltantes()
         registrador.debug("Campos faltantes tras este turno: %s", faltantes)
         if faltantes:
-            siguientes = faltantes[:MAXIMO_CAMPOS_A_PEDIR]
-            texto = self.redactarPregunta(mensaje, solicitud, historial, faltantes, advertencias)
+            camposPlantilla = self.camposParaPlantilla(solicitud, faltantes)
+            texto = self.redactarPregunta(
+                mensaje, solicitud, historial, faltantes, advertencias,
+                camposPlantilla=camposPlantilla, correccion=correccion,
+            )
+            # Los datos con error van primero: si el estudiante responde solo con el valor
+            # corregido, la asignación directa lo coloca en el campo correcto.
+            preguntados = [c for c in errores if c in faltantes]
+            preguntados += [c for c in (camposPlantilla or faltantes) if c not in preguntados]
             return RespuestaAgente(
                 mensaje=texto,
                 solicitud=solicitud,
                 camposActualizados=actualizados,
                 advertencias=advertencias,
-                camposPreguntados=siguientes,
+                camposPreguntados=preguntados,
+                plantilla=construirPlantillaDeDatos(camposPlantilla) if camposPlantilla else "",
             )
 
         return self.completarYGenerar(solicitud, actualizados, advertencias)
@@ -191,6 +209,8 @@ class AgenteFut:
                 continue
             if campo.startswith("empresa."):
                 cambios: dict[str, object] = {"empresa": {campo.split(".", 1)[1]: valor}}
+            elif campo.startswith(PREFIJO_DATOS_TRAMITE):
+                cambios = {"datosTramite": {campo[len(PREFIJO_DATOS_TRAMITE):]: valor}}
             else:
                 cambios = {campo: valor}
             actualizados = solicitud.fusionar(cambios)
@@ -203,6 +223,9 @@ class AgenteFut:
         """Descarta preguntas, saludos y cortesías antes de asignarlas a un campo."""
         texto = mensaje.strip()
         if not texto or len(texto) > 160 or texto.endswith("?") or texto.endswith("¿"):
+            return False
+        # Una plantilla enviada sin rellenar ("Celular (9 dígitos): ") no es un dato.
+        if contieneEtiquetas(texto):
             return False
         normalizado = re.sub(r"[^\w\s]", " ", normalizarClave(texto))
         palabras = normalizado.split()
@@ -263,14 +286,21 @@ class AgenteFut:
 
         for campo in yaActualizadosPorRegex:
             if campo.startswith("empresa."):
-                datos.get("empresa", {}).pop(campo.split(".", 1)[1], None)
+                if isinstance(datos.get("empresa"), dict):
+                    datos["empresa"].pop(campo.split(".", 1)[1], None)
+            elif campo.startswith(PREFIJO_DATOS_TRAMITE):
+                if isinstance(datos.get("datosTramite"), dict):
+                    datos["datosTramite"].pop(campo[len(PREFIJO_DATOS_TRAMITE):], None)
             else:
                 datos.pop(campo, None)
 
-        if isinstance(datos.get("empresa"), dict):
-            datos["empresa"] = {k: v for k, v in datos["empresa"].items() if v not in (None, "")}
-            if not datos["empresa"]:
-                datos.pop("empresa")
+        for bloque in ("empresa", "datosTramite"):
+            if bloque not in datos:
+                continue
+            if isinstance(datos[bloque], dict):
+                datos[bloque] = {k: v for k, v in datos[bloque].items() if v not in (None, "")}
+            if not isinstance(datos[bloque], dict) or not datos[bloque]:
+                datos.pop(bloque)
 
         return datos
 
@@ -287,6 +317,33 @@ class AgenteFut:
         return tramite
 
     # ------------------------------------------------------------------ redacción
+    @staticmethod
+    def camposParaPlantilla(solicitud: SolicitudFut, faltantes: list[str]) -> list[str]:
+        """Datos que se muestran en la plantilla: todos los obligatorios que faltan, más
+        los opcionales del FUT que siguen vacíos, en el orden del formulario impreso.
+
+        Devuelve una lista vacía mientras no se conozca el trámite: primero hay que
+        saber cuál es (la carta de presentación, por ejemplo, pide datos extra).
+        """
+        if solicitud.tramite is None:
+            return []
+        pendientes = set(faltantes)
+        # Los datos propios del trámite (curso, secciones...) van antes de los de la empresa.
+        orden = list(ORDEN_PLANTILLA)
+        posicion = orden.index("empresa.nombreInstitucion")
+        orden[posicion:posicion] = [
+            f"{PREFIJO_DATOS_TRAMITE}{c.clave}" for c in solicitud.tramite.camposAdicionales
+        ]
+        campos = [
+            campo
+            for campo in orden
+            if campo in pendientes
+            or (campo in CAMPOS_OPCIONALES_PLANTILLA and not getattr(solicitud, campo, ""))
+        ]
+        # Salvaguarda: cualquier faltante que no esté en ORDEN_PLANTILLA también se pide.
+        campos += [c for c in faltantes if c not in campos and c != "tramiteClave"]
+        return campos
+
     def redactarPregunta(
         self,
         mensaje: str,
@@ -294,24 +351,32 @@ class AgenteFut:
         historial: list[dict[str, str]],
         faltantes: list[str],
         advertencias: list[str],
+        camposPlantilla: list[str] | None = None,
+        correccion: str = "",
     ) -> str:
-        """Genera la siguiente pregunta, pidiendo a lo sumo dos datos.
+        """Arma la respuesta cuando aún faltan datos.
+
+        Mientras no se conozca el trámite, el modelo pregunta cuál es. Una vez conocido,
+        se arma una plantilla con TODOS los datos pendientes ("Etiqueta: ") que la interfaz
+        escribe directamente en el cuadro de mensaje del chat (``RespuestaAgente.plantilla``);
+        aquí solo se redacta el texto que la acompaña. La plantilla la arma Python, no el
+        modelo, para que nunca se omita ningún dato.
 
         El texto del modelo nunca es la última palabra sobre si el trámite está listo:
-        eso lo decide únicamente ``solicitud.camposFaltantes()``. Aquí se descarta
-        cualquier respuesta del modelo que dé a entender que ya se puede imprimir o
-        descargar el FUT mientras siga habiendo campos pendientes, y siempre se agrega
-        al final un recordatorio exacto de lo que falta, para que el estudiante nunca
-        se quede con la impresión de que terminó cuando en realidad no es así.
+        eso lo decide únicamente ``solicitud.camposFaltantes()``. Se descarta cualquier
+        respuesta del modelo que dé a entender que ya se puede imprimir o descargar el
+        FUT mientras siga habiendo campos pendientes.
         """
-        siguientes = faltantes[:MAXIMO_CAMPOS_A_PEDIR]
+        if camposPlantilla is None:
+            camposPlantilla = self.camposParaPlantilla(solicitud, faltantes)
+
         mensajes = [
             {
                 "role": "system",
                 "content": construirPromptConversacion(
                     contextoTramite=self.describirTramite(solicitud),
                     datosRegistrados=self.resumirDatos(solicitud),
-                    datosFaltantes="\n".join(f"- {describirCampo(c)}" for c in siguientes),
+                    datosFaltantes="\n".join(f"- {describirCampo(c)}" for c in faltantes),
                 ),
             },
             *self.recortarHistorial(historial),
@@ -326,15 +391,32 @@ class AgenteFut:
         registrador.debug("Respuesta cruda del modelo (conversación): %s", respuestaModelo[:300])
 
         respuestaModelo = respuestaModelo.strip()
-        if not respuestaModelo or self._afirmaFalsaCompletitud(respuestaModelo):
-            if respuestaModelo:
-                registrador.warning(
-                    "Se descartó una respuesta del modelo que insinuaba que el trámite ya "
-                    "estaba completo, pero todavía faltan datos: %s", respuestaModelo[:300],
-                )
-            respuestaModelo = self.preguntaDeRespaldo(siguientes)
+        if respuestaModelo and self._afirmaFalsaCompletitud(respuestaModelo):
+            registrador.warning(
+                "Se descartó una respuesta del modelo que insinuaba que el trámite ya "
+                "estaba completo, pero todavía faltan datos: %s", respuestaModelo[:300],
+            )
+            respuestaModelo = ""
 
-        return f"{respuestaModelo}\n\n_Aún falta: {self._resumirFaltantes(faltantes)}._"
+        if not camposPlantilla:
+            # Todavía no se sabe qué trámite es: no hay plantilla que mostrar aún.
+            introduccion = respuestaModelo or self.preguntaDeRespaldo(faltantes)
+            partes = [introduccion, correccion]
+            partes.append(
+                "_Primero necesito saber qué trámite harás; luego te dejaré en el cuadro de "
+                "mensaje una plantilla con todos los datos que hacen falta._"
+            )
+            return "\n\n".join(p for p in partes if p)
+
+        introduccion = respuestaModelo or self.introduccionDeRespaldo(solicitud, correccion)
+        obligatorios = [c for c in camposPlantilla if c not in CAMPOS_OPCIONALES_PLANTILLA]
+        partes = [
+            introduccion,
+            correccion,
+            INSTRUCCIONES_PLANTILLA,
+            self._pieDeFaltantes(len(obligatorios), hayOpcionales=len(obligatorios) < len(camposPlantilla)),
+        ]
+        return "\n\n".join(p for p in partes if p)
 
     @staticmethod
     def _afirmaFalsaCompletitud(texto: str) -> bool:
@@ -343,30 +425,50 @@ class AgenteFut:
         return any(frase in normalizado for frase in _FRASES_PROHIBIDAS_SI_INCOMPLETO)
 
     @staticmethod
-    def _resumirFaltantes(faltantes: list[str], maximoMostrado: int = 4) -> str:
-        """Lista corta y exacta de lo que aún falta, para no depender de lo que diga el modelo."""
-        etiquetas = [describirCampo(c).lower() for c in faltantes]
-        if len(etiquetas) <= maximoMostrado:
-            return ", ".join(etiquetas)
-        resto = len(etiquetas) - maximoMostrado
-        return f"{', '.join(etiquetas[:maximoMostrado])} y {resto} más"
+    def _pieDeFaltantes(cantidadObligatorios: int, hayOpcionales: bool) -> str:
+        """Pie exacto calculado en Python, para no depender de lo que diga el modelo."""
+        if cantidadObligatorios == 1:
+            texto = "_Aún falta 1 dato obligatorio."
+        else:
+            texto = f"_Aún faltan {cantidadObligatorios} datos obligatorios."
+        if hayOpcionales:
+            texto += " Los marcados como (opcional) puedes dejarlos en blanco."
+        return f"{texto}_"
+
+    @staticmethod
+    def introduccionDeRespaldo(solicitud: SolicitudFut, correccion: str = "") -> str:
+        """Frase de entrada sin modelo, por si ni Qwen3 ni Gemini están disponibles."""
+        if correccion:
+            return ""
+        tramite = solicitud.tramite
+        if tramite is None:
+            return "Para generar tu FUT necesito los siguientes datos."
+        return f"Para generar tu FUT de {tramite.nombre.lower()} necesito los siguientes datos."
 
     @staticmethod
     def preguntaDeRespaldo(campos: list[str]) -> str:
         """Pregunta sin modelo, por si ni Qwen3 ni Gemini están disponibles."""
+        if "tramiteClave" in campos:
+            return (
+                "¿Qué trámite necesitas hacer? Por ejemplo: constancia de estudios, "
+                "rectificación de matrícula o carta de presentación para prácticas."
+            )
         etiquetas = [describirCampo(c).lower() for c in campos]
         if not etiquetas:
             return "¿Me confirmas los datos que faltan?"
-        if len(etiquetas) == 1:
-            return f"Para continuar necesito un dato: {etiquetas[0]}. ¿Me lo pasas?"
-        return f"Para continuar necesito dos datos: {etiquetas[0]} y {etiquetas[1]}."
+        return f"Para continuar necesito: {', '.join(etiquetas)}."
 
     @staticmethod
     def redactarCorreccion(errores: dict[str, str]) -> str:
-        """Mensaje directo cuando un dato entregado no pasa validación."""
-        primero = next(iter(errores.items()))
-        campo, detalle = primero
-        return f"Revisemos {describirCampo(campo).lower()}: {detalle} ¿Me lo confirmas?"
+        """Aviso de los datos que no pasaron la validación (se vuelven a pedir en la plantilla)."""
+        if len(errores) == 1:
+            campo, detalle = next(iter(errores.items()))
+            return (
+                f"Revisemos {describirCampo(campo).lower()}: {detalle} "
+                "Vuelve a escribirlo en la plantilla de abajo."
+            )
+        detalles = "; ".join(f"{describirCampo(c).lower()}: {d}" for c, d in errores.items())
+        return f"Revisemos estos datos ({detalles}). Vuelve a escribirlos en la plantilla de abajo."
 
     def redactarFundamentacion(self, solicitud: SolicitudFut, motivo: str = "") -> str:
         """Genera el texto de la fundamentación.
@@ -497,6 +599,7 @@ class AgenteFut:
         for clave, valor in solicitud.aCamposDelFormulario().items():
             if valor and clave not in {"fundamentacion", "documentosAdjuntos"}:
                 lineas.append(f"- {describirCampo(clave)}: {valor}")
+        lineas += [f"- {linea}" for linea in solicitud.lineasDatosTramite()]
         if solicitud.esCartaPresentacion:
             for clave in ("nombreInstitucion", "ruc", "correo", "telefono", "direccion", "destinatario"):
                 valor = getattr(solicitud.empresa, clave, "")

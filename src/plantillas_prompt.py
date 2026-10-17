@@ -11,6 +11,8 @@ from typing import Any
 from .catalogo_tramites import (
     ESCUELAS_PROFESIONALES,
     TRAMITES_POR_CLAVE,
+    listarCamposAdicionales,
+    obtenerCampoAdicional,
     resumirCatalogoParaModelo,
 )
 from .coordenadas_fut import ETIQUETAS
@@ -44,6 +46,87 @@ _CAMPOS_EMPRESA: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Plantilla para copiar y rellenar en el chat
+# ---------------------------------------------------------------------------
+#: Orden en que aparecen los datos en la plantilla (mismo orden que el FUT impreso).
+#: Los datos propios del trámite (``tramite.<clave>``, p. ej. curso y secciones) se
+#: insertan antes de los de la empresa; ver ``AgenteFut.camposParaPlantilla``.
+ORDEN_PLANTILLA: tuple[str, ...] = (
+    "apellidosNombres",
+    "escuelaProfesional",
+    "codigoEstudiante",
+    "documentoIdentidad",
+    "direccion",
+    "numeroDepartamento",
+    "distrito",
+    "telefonoFijo",
+    "celular",
+    "correoElectronico",
+    "empresa.nombreInstitucion",
+    "empresa.ruc",
+    "empresa.correo",
+    "empresa.telefono",
+    "empresa.direccion",
+    "empresa.destinatario",
+)
+
+#: Datos que no son obligatorios pero sí tienen casilla en el FUT: se muestran en la
+#: plantilla marcados como "(opcional)" para que el estudiante sepa que existen.
+CAMPOS_OPCIONALES_PLANTILLA: frozenset[str] = frozenset({"numeroDepartamento", "telefonoFijo"})
+
+#: Etiqueta de cada renglón de la plantilla. IMPORTANTE: cada etiqueta debe estar
+#: reconocida en ``_ETIQUETAS_A_CAMPO`` de ``extractor_determinista.py`` (sin tildes y en
+#: minúsculas); así la plantilla rellenada se lee sin depender del modelo de lenguaje.
+#: ``tests/test_plantilla_datos.py`` comprueba que ambas listas sigan sincronizadas.
+ETIQUETAS_PLANTILLA: dict[str, str] = {
+    "apellidosNombres": "Apellidos y nombres",
+    "escuelaProfesional": "Escuela profesional",
+    "codigoEstudiante": "Código de estudiante",
+    "documentoIdentidad": "DNI o pasaporte",
+    "direccion": "Dirección domiciliaria",
+    "numeroDepartamento": "N° y/o Dpto.",
+    "distrito": "Distrito",
+    "telefonoFijo": "Teléfono fijo",
+    "celular": "Celular",
+    "correoElectronico": "Correo electrónico",
+    "empresa.nombreInstitucion": "Nombre de la institución o empresa",
+    "empresa.ruc": "RUC de la empresa",
+    "empresa.correo": "Correo de la empresa",
+    "empresa.telefono": "Teléfono de la empresa",
+    "empresa.direccion": "Dirección de la institución o empresa",
+    "empresa.destinatario": "Nombre, apellidos y cargo a quien va dirigido",
+}
+
+#: Aclaración breve entre paréntesis para los datos con un formato concreto.
+PISTAS_PLANTILLA: dict[str, str] = {
+    "escuelaProfesional": " / ".join(
+        e.replace("Ingeniería de ", "").replace("Ingeniería ", "") for e in ESCUELAS_PROFESIONALES
+    ),
+    "documentoIdentidad": "8 dígitos si es DNI",
+    "celular": "9 dígitos",
+    "empresa.ruc": "11 dígitos",
+}
+
+
+def construirPlantillaDeDatos(campos: list[str]) -> str:
+    """Renglones "Etiqueta: " listos para copiar, uno por dato, en el orden recibido."""
+    renglones: list[str] = []
+    for campo in campos:
+        etiqueta = ETIQUETAS_PLANTILLA.get(campo, describirCampo(campo))
+        if campo in CAMPOS_OPCIONALES_PLANTILLA:
+            pista = "opcional"
+        elif campo.startswith("tramite."):
+            adicional = obtenerCampoAdicional(campo.split(".", 1)[1])
+            pista = adicional.pista if adicional else ""
+        else:
+            pista = PISTAS_PLANTILLA.get(campo)
+        if pista:
+            etiqueta = f"{etiqueta} ({pista})"
+        renglones.append(f"{etiqueta}: ")
+    return "\n".join(renglones)
+
+
 def construirEsquemaExtraccion() -> dict[str, Any]:
     """JSON Schema que Ollama impone a la respuesta del modelo al extraer datos.
 
@@ -61,6 +144,12 @@ def construirEsquemaExtraccion() -> dict[str, Any]:
         "type": "object",
         "properties": {campo: {"type": "string"} for campo in _CAMPOS_EMPRESA},
     }
+    adicionales = listarCamposAdicionales()
+    if adicionales:
+        propiedades["datosTramite"] = {
+            "type": "object",
+            "properties": {campo.clave: {"type": "string"} for campo in adicionales},
+        }
     return {"type": "object", "properties": propiedades}
 
 
@@ -83,6 +172,8 @@ identificó un trámite, omítela.
 6. El bloque `empresa` solo aplica cuando el trámite es la carta de presentación para \
 prácticas: son los datos del centro de prácticas, NO los del estudiante.
 7. No confundas el correo del estudiante con el correo de la empresa.
+8. El bloque `datosTramite` guarda datos propios de algunos trámites: {datosTramite}. \
+Inclúyelos solo si el estudiante los dio de forma explícita.
 
 Catálogo de trámites disponibles:
 {catalogo}
@@ -96,11 +187,13 @@ preparar su Formulario Único de Trámite (FUT).
 
 Cómo respondes:
 - En español peruano, cercano pero formal. Tuteas al estudiante.
-- Respuestas breves: dos o tres frases como máximo, sin listas largas.
-- Pides como mucho DOS datos por turno, y los nombras por separado y con claridad (por \
-ejemplo: "tu código de estudiante y tu DNI"). Nunca fusiones dos datos distintos en una sola \
-pregunta ambigua.
-- Explicas para qué sirve un dato solo si no es evidente.
+- Respuestas breves: una o dos frases como máximo, sin listas.
+- Si todavía no se sabe qué trámite necesita el estudiante, pregúntale cuál es.
+- Si el trámite ya se conoce, el sistema escribirá en el cuadro de mensaje del estudiante una \
+plantilla con TODOS los datos que faltan, para que solo la rellene y la envíe. Tú NO enumeres \
+los datos, NO copies la plantilla y NO pidas datos sueltos: solo responde brevemente a lo que \
+dijo el estudiante (si hizo una pregunta, contéstala) e invítalo a completar la plantilla que \
+ya tiene en su cuadro de mensaje.
 - Nunca inventas requisitos, montos ni plazos: usa solo lo que aparece en el contexto.
 - No repites datos que el estudiante ya confirmó, salvo que él pida revisarlos.
 - No uses markdown pesado ni encabezados; escribe en prosa corta.
@@ -121,7 +214,7 @@ Contexto del trámite en curso:
 Datos ya registrados:
 {datosRegistrados}
 
-Datos que todavía faltan (pregunta por los primeros de esta lista):
+Datos que todavía faltan (solo como referencia; la plantilla ya los nombra todos):
 {datosFaltantes}
 """
 
@@ -141,15 +234,22 @@ Motivo indicado por el estudiante: {motivo}
 
 MENSAJE_BIENVENIDA = (
     "Hola, soy el asistente de trámites de la FIIS. Te ayudo a llenar tu Formulario Único "
-    "de Trámite y te lo entrego listo para imprimir y firmar. ¿Qué trámite necesitas hacer?"
+    "de Trámite y te lo entrego listo para imprimir y firmar. ¿Qué trámite necesitas hacer? "
+    "En cuanto me lo digas, te dejaré escrita en el cuadro de mensaje una plantilla con todos "
+    "los datos que necesito, para que solo la completes y la envíes."
 )
 
 
 def construirPromptExtraccion() -> str:
     """Prompt del sistema para la fase de extracción."""
+    adicionales = listarCamposAdicionales()
     return PROMPT_EXTRACCION.format(
         catalogo=resumirCatalogoParaModelo(),
         escuelas=", ".join(ESCUELAS_PROFESIONALES),
+        datosTramite=(
+            "; ".join(f"`{c.clave}` = {c.etiqueta.lower()} ({c.pista})" for c in adicionales)
+            or "ninguno"
+        ),
     )
 
 
@@ -184,6 +284,9 @@ def describirCampo(clave: str) -> str:
             "destinatario": "Nombre, apellidos y cargo a quien va dirigido",
         }
         return etiquetasEmpresa.get(clave.split(".", 1)[1], clave)
+    if clave.startswith("tramite."):
+        adicional = obtenerCampoAdicional(clave.split(".", 1)[1])
+        return adicional.etiqueta if adicional else clave
     if clave == "tramiteClave":
         return "Trámite a realizar"
     return ETIQUETAS.get(clave, clave)
@@ -194,6 +297,10 @@ __all__ = [
     "construirPromptExtraccion",
     "construirPromptConversacion",
     "construirPromptFundamentacion",
+    "construirPlantillaDeDatos",
     "describirCampo",
     "MENSAJE_BIENVENIDA",
+    "ORDEN_PLANTILLA",
+    "CAMPOS_OPCIONALES_PLANTILLA",
+    "ETIQUETAS_PLANTILLA",
 ]

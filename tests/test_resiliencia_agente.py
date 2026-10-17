@@ -89,10 +89,11 @@ def testUnValorConFormatoInvalidoSePideCorregir() -> None:
     respuesta = agente.procesarMensaje(
         "no tengo DNI todavía", solicitud, [], camposEsperados=["documentoIdentidad"]
     )
-    # Se asignó el texto tal cual, pero al no pasar el formato se pide confirmarlo de nuevo
-    # en vez de aceptarlo silenciosamente.
-    assert respuesta.solicitud.documentoIdentidad
+    # Se asignó el texto tal cual, pero al no pasar el formato se descarta (para que el
+    # valor corregido pueda capturarse después) y se vuelve a pedir en la plantilla.
+    assert respuesta.solicitud.documentoIdentidad == ""
     assert "documento" in respuesta.mensaje.lower() or "DNI" in respuesta.mensaje
+    assert respuesta.camposPreguntados[0] == "documentoIdentidad"
 
 
 def testUnFalloDeGeneracionInesperadoNoRompeLaConversacion(monkeypatch) -> None:
@@ -156,7 +157,8 @@ def testSeDescartaUnaAfirmacionFalsaDeCompletitud() -> None:
     assert respuesta.pdf is None
     # Pero los datos con etiqueta explícita sí deben haberse capturado.
     assert respuesta.solicitud.apellidosNombres == "PEREZ, JUAN"
-    assert respuesta.solicitud.escuelaProfesional == "Ingeniería industrial"
+    # La escuela se normaliza al nombre oficial del catálogo.
+    assert respuesta.solicitud.escuelaProfesional == "Ingeniería Industrial"
 
 
 def testElMensajeSiempreIncluyeLoQueRealmenteFalta() -> None:

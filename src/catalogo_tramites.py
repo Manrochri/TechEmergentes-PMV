@@ -80,6 +80,19 @@ DEP_BIBLIOTECA = "Biblioteca Especializada - FIIS"
 
 
 @dataclass(frozen=True)
+class CampoAdicional:
+    """Dato propio de un trámite concreto (p. ej. el curso en una rectificación).
+
+    Se pide en la plantilla del chat, es obligatorio para ese trámite y se imprime en
+    la "Fundamentación de lo Solicitado" como ``"<etiqueta>: <valor>"``.
+    """
+
+    clave: str
+    etiqueta: str
+    pista: str = ""
+
+
+@dataclass(frozen=True)
 class Tramite:
     """Un trámite ofrecido por la FIIS, con su costo y sus requisitos."""
 
@@ -92,6 +105,8 @@ class Tramite:
     dependencia: str = DEP_DECANATO
     sumilla: str = ""
     requiereDatosEmpresa: bool = False
+    #: Datos obligatorios propios de este trámite, además de los del estudiante.
+    camposAdicionales: tuple[CampoAdicional, ...] = ()
     documentosSugeridos: tuple[str, ...] = ()
     palabrasClave: tuple[str, ...] = ()
 
@@ -136,6 +151,11 @@ CATALOGO: tuple[Tramite, ...] = (
         codigoPago="83138",
         dependencia=DEP_REGISTROS,
         sumilla="Solicito rectificación de matrícula por asignatura",
+        camposAdicionales=(
+            CampoAdicional("curso", "Curso", pista="nombre o código del curso"),
+            CampoAdicional("seccionOrigen", "Sección de origen", pista="en la que estás matriculado"),
+            CampoAdicional("seccionDestino", "Sección de destino", pista="a la que deseas cambiarte"),
+        ),
         documentosSugeridos=(
             "Comprobante de pago por rectificación de matrícula",
             "Ficha de matrícula vigente",
@@ -411,6 +431,24 @@ TRAMITES_POR_CLAVE: dict[str, Tramite] = {t.clave: t for t in CATALOGO}
 CLAVE_CARTA_PRESENTACION: str = "carta_presentacion"
 
 
+def obtenerCampoAdicional(clave: str) -> CampoAdicional | None:
+    """Busca la definición de un dato propio de trámite por su clave (sin el prefijo)."""
+    for tramite in CATALOGO:
+        for campo in tramite.camposAdicionales:
+            if campo.clave == clave:
+                return campo
+    return None
+
+
+def listarCamposAdicionales() -> tuple[CampoAdicional, ...]:
+    """Todos los datos propios de trámite del catálogo, sin repetir claves."""
+    vistos: dict[str, CampoAdicional] = {}
+    for tramite in CATALOGO:
+        for campo in tramite.camposAdicionales:
+            vistos.setdefault(campo.clave, campo)
+    return tuple(vistos.values())
+
+
 def listarTramites() -> tuple[Tramite, ...]:
     """Devuelve el catálogo completo, en el orden del tarifario oficial."""
     return CATALOGO
@@ -446,6 +484,25 @@ def buscarTramitePorTexto(texto: str) -> Tramite | None:
     return mejorTramite
 
 
+def normalizarEscuela(texto: str | None) -> str:
+    """Convierte lo que escriba el estudiante en el nombre oficial de su escuela.
+
+    Acepta respuestas abreviadas como "sistemas", "Ing. Industrial" o "mecatronica"
+    (útil cuando se rellena la plantilla del chat). Compara palabra por palabra para no
+    confundir "agroindustrial" con "industrial". Si no reconoce la escuela, devuelve el
+    texto tal cual (limpio) para no perder el dato.
+    """
+    original = " ".join(str(texto or "").split())
+    palabras = {p.rstrip("s") for p in normalizarClave(original).replace(".", " ").split()}
+    if not palabras:
+        return ""
+    for escuela in ESCUELAS_PROFESIONALES:
+        distintivo = normalizarClave(escuela).split()[-1].rstrip("s")
+        if distintivo in palabras:
+            return escuela
+    return original
+
+
 def describirNumeralFut(numeral: str) -> str:
     """Devuelve la descripción oficial de un numeral del reverso del FUT."""
     return NUMERALES_FUT.get(str(numeral).strip(), NUMERALES_FUT[NUMERAL_OTROS])
@@ -462,6 +519,7 @@ def resumirCatalogoParaModelo() -> str:
 
 __all__ = [
     "Tramite",
+    "CampoAdicional",
     "CATALOGO",
     "TRAMITES_POR_CLAVE",
     "CLAVE_CARTA_PRESENTACION",
@@ -472,6 +530,9 @@ __all__ = [
     "listarTramites",
     "obtenerTramite",
     "buscarTramitePorTexto",
+    "normalizarEscuela",
+    "obtenerCampoAdicional",
+    "listarCamposAdicionales",
     "describirNumeralFut",
     "resumirCatalogoParaModelo",
 ]

@@ -14,6 +14,11 @@ el formulario, se escribe encima de él. El reverso con la lista de trámites se
 
 - **Chat con el estudiante.** El agente identifica el trámite entre los 22 del tarifario vigente
   de la FIIS y le indica el monto y el código de pago del Banco de la Nación.
+- **Plantilla para copiar y rellenar.** En cuanto conoce el trámite, el asistente muestra en el
+  chat, dentro de un recuadro con botón de copiar, **todos** los datos que faltan en formato
+  `Etiqueta: ` (uno por renglón, con los opcionales marcados como tales). El estudiante la
+  copia, escribe cada dato después de los dos puntos y la envía en un solo mensaje. Si algún
+  dato no pasa la validación, se descarta y vuelve a aparecer en la plantilla siguiente.
 - **Completa el FUT automáticamente.** Dependencia de destino, tipo de solicitante, datos
   personales, domicilio, contacto, fundamentación, documentos adjuntos, folios, lugar y fecha.
 - **Descarga e impresión desde el propio chat.** Cuando el formulario queda completo, el mensaje
@@ -143,7 +148,8 @@ Se abre en `http://localhost:8501`. Para detenerla, `Ctrl + C` en la terminal.
 1. Escribe lo que necesitas, en lenguaje natural:
    *"Necesito una carta de presentación para mis prácticas en una consultora"*.
 2. El asistente reconoce el trámite, muestra el monto y el código de pago en la barra lateral,
-   y empieza a pedir los datos de dos en dos.
+   y te muestra una plantilla con todos los datos que necesita. Cópiala con el botón de copiar
+   del recuadro, completa cada renglón después de los dos puntos y envíala en un solo mensaje.
 3. Cuando el expediente está completo, el mensaje trae dos botones: **Descargar PDF** y
    **Abrir e imprimir** (abre el FUT en una pestaña nueva; se imprime con el ícono del visor
    del navegador o Ctrl+P).
@@ -281,6 +287,12 @@ Genera un FUT de ejemplo en `salidas/`.
 
 ## Ajustes frecuentes
 
+**Cambiar los datos de la plantilla del chat.** El orden, el texto de cada renglón y las
+aclaraciones entre paréntesis están en `ORDEN_PLANTILLA`, `ETIQUETAS_PLANTILLA` y
+`PISTAS_PLANTILLA` de `src/plantillas_prompt.py`. Si cambias una etiqueta, agrégala también
+(sin tildes y en minúsculas) a `_ETIQUETAS_A_CAMPO` de `src/extractor_determinista.py`;
+`tests/test_plantilla_datos.py` falla si quedan desincronizadas.
+
 **Cambiar montos o añadir un trámite.** Edita `src/catalogo_tramites.py`: cada trámite es una
 entrada de `CATALOGO` con su concepto, monto, código de pago, dependencia de destino, sumilla y
 documentos sugeridos. Las `palabrasClave` alimentan el reconocimiento por texto libre.
@@ -304,7 +316,7 @@ fuente. Después ejecuta `python scripts\prueba_llenado.py` y revisa el resultad
 | *No se pudo conectar con Ollama* | El servicio no está corriendo. Ejecuta `ollama serve` en otra terminal. |
 | *El modelo 'qwen2.5:7b' no está descargado* | `ollama pull qwen2.5:7b` |
 | El asistente tarda mucho en responder | Es normal en la primera consulta: el modelo se carga en memoria. Sube `OLLAMA_TIEMPO_ESPERA` si hace falta. |
-| El asistente no entiende bien los datos | Escribe un dato por línea (*"DNI: 74125896"*). Como alternativa, usa el formulario manual del panel lateral. |
+| El asistente no entiende bien los datos | Usa la plantilla tal como aparece en el chat, sin borrar las etiquetas (*"DNI o pasaporte: 74125896"*). Como alternativa, usa el formulario manual del panel lateral. |
 | `streamlit` no se reconoce como comando | El entorno virtual no está activo. Ejecuta `.\.venv\Scripts\Activate.ps1`. |
 | El PDF se descarga en blanco | Falta la plantilla en `assets/`. Ejecuta `python scripts\verificar_entorno.py`. |
 | El chat pide el mismo dato una y otra vez | Activa `MODO_DEPURACION=true` en `.env` y revisa la consola: si ves "JSON inválido" repetido, el modelo está teniendo problemas para seguir el esquema. El asistente ya sugiere el panel manual tras dos turnos sin avance; úsalo como salida garantizada. |
