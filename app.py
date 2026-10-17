@@ -10,6 +10,7 @@ Ejecución:
 from __future__ import annotations
 
 import base64
+import html
 import logging
 from pathlib import Path
 
@@ -367,9 +368,11 @@ def generarDesdeFormulario(solicitud: SolicitudFut, configuracion: Configuracion
     st.session_state.camposEsperados = []
     st.session_state.plantillaPendiente = None
     registrarMensajeConDocumento(
-        "Actualicé tus datos y volví a generar el FUT. Descárgalo o ábrelo para imprimir aquí abajo.",
+        "Actualicé tus datos y volví a generar el FUT.",
         pdf,
         nombreArchivo,
+        solicitud=solicitud,
+        titulo="Tu FUT se actualizó",
     )
     st.rerun()
 
@@ -402,12 +405,29 @@ def renderizarEstadoDelSistema(configuracion: Configuracion) -> None:
 # ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
-def registrarMensajeConDocumento(texto: str, pdf: bytes | None, nombreArchivo: str | None) -> None:
-    """Agrega un mensaje del asistente y, si corresponde, adjunta el PDF generado."""
+def registrarMensajeConDocumento(
+    texto: str,
+    pdf: bytes | None,
+    nombreArchivo: str | None,
+    solicitud: SolicitudFut | None = None,
+    titulo: str = "Tu FUT está listo",
+) -> None:
+    """Agrega un mensaje del asistente y, si corresponde, adjunta el PDF generado.
+
+    Junto al PDF se guarda una foto de lo que necesita la tarjeta de cierre (trámite y
+    documentos adjuntos), para que un mensaje antiguo no cambie si luego se edita la
+    solicitud desde el panel lateral.
+    """
     st.session_state.mensajes.append({"role": "assistant", "content": texto})
     if pdf and nombreArchivo:
         indice = len(st.session_state.mensajes) - 1
-        st.session_state.documentos[indice] = {"pdf": pdf, "nombre": nombreArchivo}
+        st.session_state.documentos[indice] = {
+            "pdf": pdf,
+            "nombre": nombreArchivo,
+            "titulo": titulo,
+            "tramiteClave": solicitud.tramiteClave if solicitud else None,
+            "adjuntos": list(solicitud.documentosAdjuntos) if solicitud else [],
+        }
 
 
 def renderizarHistorial() -> None:
@@ -416,10 +436,13 @@ def renderizarHistorial() -> None:
     ultimaPlantilla = max(plantillas) if plantillas else None
     for indice, mensaje in enumerate(st.session_state.mensajes):
         with st.chat_message(mensaje["role"]):
-            st.markdown(mensaje["content"])
             documento = st.session_state.documentos.get(indice)
             if documento:
-                renderizarDescarga(documento, indice)
+                # La tarjeta reemplaza al texto del mensaje: ya contiene el estado, el
+                # pago y los pasos, y repetirlos en un párrafo solo añade ruido.
+                renderizarTarjetaFutListo(documento, indice)
+            else:
+                st.markdown(mensaje["content"])
             if indice == ultimaPlantilla:
                 renderizarRespaldoPlantilla(plantillas[indice], indice)
 
@@ -437,29 +460,113 @@ def renderizarRespaldoPlantilla(plantilla: str, indice: int) -> None:
             st.rerun()
 
 
-def renderizarDescarga(documento: dict[str, object], indice: int) -> None:
-    """Bloque de descarga e impresión del FUT dentro del propio mensaje del chat.
+def renderizarTarjetaFutListo(documento: dict[str, object], indice: int) -> None:
+    """Tarjeta de cierre: estado, pago, acciones y pasos, en ese orden de importancia.
+
+    Jerarquía pensada para leerse de un vistazo:
+    1. Estado: "Tu FUT está listo" y el nombre del trámite.
+    2. Pago: monto y código como datos grandes, que es lo que el estudiante copia en el
+       banco (antes estaban enterrados a mitad de un párrafo).
+    3. Acciones: descargar (principal) e imprimir (secundaria).
+    4. Pasos siguientes: lista numerada corta, cada uno empezando por su verbo.
 
     La firma se deja siempre en blanco a propósito: es una firma manuscrita la que la
     Secretaría General exige al presentar el trámite en físico, y una imagen adjunta no
     tiene ese valor ni evita que la oficina pida firmar de todos modos. Por eso el
-    formulario solo imprime el nombre bajo la línea de firma (el "Post firma") y aquí se
-    recuerda con claridad que falta firmarlo a mano, en vez de ofrecer una opción de
-    "adjuntar firma" que daría una falsa sensación de trámite terminado.
+    formulario solo imprime el nombre bajo la línea de firma (el "Post firma") y el paso
+    2 recuerda firmarlo a mano, en vez de ofrecer una opción de "adjuntar firma" que
+    daría una falsa sensación de trámite terminado.
     """
+    tramite = obtenerTramite(documento.get("tramiteClave"))  # type: ignore[arg-type]
+    titulo = html.escape(str(documento.get("titulo") or "Tu FUT está listo"))
+    nombreTramite = html.escape(tramite.nombre) if tramite else ""
+
+    st.markdown(
+        f"""
+        <div class="fut-listo">
+          <div class="fut-estado">
+            <span class="fut-icono" aria-hidden="true">✓</span>
+            <div>
+              <p class="fut-titulo">{titulo}</p>
+              <p class="fut-subtitulo">{nombreTramite}</p>
+            </div>
+          </div>
+          {construirBloquePago(tramite)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    renderizarAcciones(documento, indice)
+
+    st.markdown(construirPasosSiguientes(tramite, documento.get("adjuntos") or []), unsafe_allow_html=True)
+
+
+def construirBloquePago(tramite) -> str:
+    """Monto y código de pago como datos destacados (o un aviso si no aplica)."""
+    if tramite is None:
+        return ""
+    if tramite.llevaCodigoPago:
+        codigo = (
+            '<span class="fut-dato-etiqueta">Código de pago</span>'
+            f'<span class="fut-dato-valor fut-mono">{html.escape(tramite.codigoPago)}</span>'
+        )
+    else:
+        codigo = (
+            '<span class="fut-dato-etiqueta">Código de pago</span>'
+            '<span class="fut-dato-valor fut-apagado">No requiere</span>'
+        )
+    return f"""
+          <div class="fut-pago">
+            <div class="fut-dato">
+              <span class="fut-dato-etiqueta">Monto a pagar</span>
+              <span class="fut-dato-valor">{html.escape(tramite.montoFormateado)}</span>
+            </div>
+            <div class="fut-dato">{codigo}</div>
+          </div>"""
+
+
+def construirPasosSiguientes(tramite, adjuntos: list[str]) -> str:
+    """Lista numerada y breve de lo que el estudiante tiene que hacer después."""
+    pasos: list[str] = []
+    if tramite is not None and tramite.monto is not None:
+        # El monto y el código ya están destacados arriba: aquí solo va la acción.
+        if tramite.llevaCodigoPago:
+            pasos.append("<strong>Paga</strong> en el Banco de la Nación con el código de pago.")
+        else:
+            pasos.append("<strong>Paga</strong> el monto indicado (no lleva código de pago).")
+    pasos.append(
+        "<strong>Imprime y firma a mano</strong> en «Firma y Post Firma del Solicitante» "
+        "(no se acepta firma digital)."
+    )
+    documentos = ""
+    if adjuntos:
+        documentos = '<span class="fut-adjuntos">' + " · ".join(html.escape(d) for d in adjuntos) + "</span>"
+    pasos.append(
+        f"<strong>Preséntalo</strong> en la Oficina de Trámite Documentario con:{documentos}"
+        if adjuntos
+        else "<strong>Preséntalo</strong> en la Oficina de Trámite Documentario."
+    )
+    elementos = "".join(f"<li>{paso}</li>" for paso in pasos)
+    return f"""
+        <div class="fut-siguientes">
+          <p class="fut-seccion">Siguientes pasos</p>
+          <ol class="fut-pasos">{elementos}</ol>
+        </div>
+        """
+
+
+def renderizarAcciones(documento: dict[str, object], indice: int) -> None:
+    """Descargar (acción principal) e imprimir (secundaria), con el nombre del archivo."""
     nombre = str(documento["nombre"])
     pdfBytes = documento["pdf"]
     pdfBase64 = base64.b64encode(pdfBytes).decode("ascii")
 
-    st.markdown(
-        f'<div class="bloque-descarga"><div class="archivo">{nombre}</div></div>',
-        unsafe_allow_html=True,
-    )
-
     columnaDescarga, columnaImprimir = st.columns(2)
     with columnaDescarga:
         st.download_button(
-            label="⬇️ Descargar PDF",
+            label="Descargar PDF",
+            icon=":material/download:",
             data=pdfBytes,
             file_name=nombre,
             mime="application/pdf",
@@ -469,10 +576,10 @@ def renderizarDescarga(documento: dict[str, object], indice: int) -> None:
     with columnaImprimir:
         renderizarBotonImprimir(pdfBase64, indice)
 
-    st.caption(
-        "El botón de imprimir abre el PDF en una pestaña nueva; usa el ícono de impresión "
-        "del visor de tu navegador (o Ctrl+P). Firma a mano sobre \"Firma y Post Firma del "
-        "Solicitante\" antes de presentarlo: no se acepta ni se genera firma digital."
+    st.markdown(
+        f'<p class="fut-archivo">{html.escape(nombre)} · "Imprimir" abre el PDF en una '
+        "pestaña nueva</p>",
+        unsafe_allow_html=True,
     )
 
 
@@ -502,8 +609,9 @@ def renderizarBotonImprimir(pdfBase64: str, indice: int) -> None:
         display: flex;
         align-items: center;
         justify-content: center;
+        gap: 0.45rem;
         width: 100%;
-        height: 2.3rem;
+        height: 2.5rem;
         background: transparent;
         color: {colorPrincipal};
         border: 1px solid {colorPrincipal};
@@ -518,7 +626,12 @@ def renderizarBotonImprimir(pdfBase64: str, indice: int) -> None:
       #{idBoton}:hover {{ background: {colorPrincipal}; color: #fff; }}
       #{idBoton}:focus-visible {{ outline: 2px solid {colorPrincipal}; outline-offset: 2px; }}
     </style>
-    <button id="{idBoton}" type="button">🖨️ Abrir e imprimir</button>
+    <button id="{idBoton}" type="button">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+        <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+      </svg>
+      Imprimir
+    </button>
     <script>
       document.getElementById("{idBoton}").addEventListener("click", function () {{
         const base64 = "{pdfBase64}";
@@ -533,7 +646,7 @@ def renderizarBotonImprimir(pdfBase64: str, indice: int) -> None:
       }});
     </script>
     """
-    componentes.html(html, height=44)
+    componentes.html(html, height=46)
 
 
 def procesarEntrada(texto: str) -> None:
@@ -571,7 +684,9 @@ def procesarEntrada(texto: str) -> None:
             "sin depender del chat."
         )
 
-    registrarMensajeConDocumento(mensaje, respuesta.pdf, respuesta.nombreArchivo)
+    registrarMensajeConDocumento(
+        mensaje, respuesta.pdf, respuesta.nombreArchivo, solicitud=respuesta.solicitud
+    )
     if respuesta.plantilla:
         indice = len(st.session_state.mensajes) - 1
         st.session_state.plantillas[indice] = respuesta.plantilla

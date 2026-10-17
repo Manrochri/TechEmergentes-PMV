@@ -556,20 +556,19 @@ class AgenteFut:
 
     @staticmethod
     def redactarCierre(solicitud: SolicitudFut) -> str:
-        """Mensaje final con el costo, el código de pago y los pasos siguientes."""
+        """Texto breve de cierre.
+
+        En la interfaz este mensaje se muestra como una tarjeta (estado, pago, acciones y
+        pasos; ver ``renderizarTarjetaFutListo`` en ``app.py``). El texto queda en el
+        historial para que el modelo sepa que el FUT ya se generó y con qué costo.
+        """
         tramite = solicitud.tramite
         if tramite is None:
-            return "Tu FUT está listo. Descárgalo, imprímelo y fírmalo antes de presentarlo."
-
-        partes = [
-            f"Listo. Tu FUT para {tramite.nombre.lower()} está completo: descárgalo o ábrelo "
-            "para imprimir con los botones de aquí abajo.",
-            f"Costo del trámite: {tramite.resumirCosto()}.",
-            "Fírmalo a mano sobre \"Firma y Post Firma del Solicitante\" (no se acepta firma "
-            "digital) y preséntalo con los documentos adjuntos en la Oficina de Trámite "
-            "Documentario.",
-        ]
-        return " ".join(partes)
+            return "Tu FUT está listo. Imprímelo y fírmalo a mano antes de presentarlo."
+        return (
+            f"Tu FUT de {tramite.nombre.lower()} está listo. Costo: {tramite.resumirCosto()}. "
+            "Imprímelo, fírmalo a mano y preséntalo en la Oficina de Trámite Documentario."
+        )
 
     # ------------------------------------------------------------------ auxiliares
     def recortarHistorial(self, historial: list[dict[str, str]]) -> list[dict[str, str]]:

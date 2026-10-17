@@ -234,24 +234,181 @@ header[data-testid="stHeader"] {
   color: var(--granate-oscuro);
 }
 
-/* ------------------------------------------------------------------ descarga */
-.bloque-descarga {
-  border: 1px solid var(--granate-borde);
-  border-left: 3px solid var(--granate);
-  background: var(--granate-suave);
-  border-radius: var(--radio);
-  padding: 0.7rem 0.85rem 0.3rem 0.85rem;
-  margin-top: 0.5rem;
+/* ------------------------------------------------------------------ FUT listo
+   Tarjeta de cierre. Jerarquía: estado > pago > acciones > pasos. Los datos que el
+   estudiante copia en el banco (monto y código) son lo más grande; el resto queda en
+   texto de apoyo. Un solo acento de color, sin bordes decorativos innecesarios. */
+.fut-listo {
+  margin-bottom: 0.9rem;
 }
 
-.bloque-descarga .archivo {
-  font-size: 0.79rem;
+.fut-estado {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.95rem;
+}
+
+.fut-icono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #e5f0e9;
+  color: var(--exito);
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+[data-testid="stChatMessage"] p.fut-titulo {
+  font-size: 1.12rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--tinta);
+  margin: 0;
+}
+
+[data-testid="stChatMessage"] p.fut-subtitulo {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--tinta-suave);
+  margin: 0.1rem 0 0 0;
+}
+
+.fut-pago {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--granate-suave);
+  border: 1px solid var(--granate-borde);
+  border-radius: var(--radio);
+}
+
+.fut-dato {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.8rem 1rem;
+}
+
+.fut-dato + .fut-dato {
+  border-left: 1px solid var(--granate-borde);
+}
+
+.fut-dato-etiqueta {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tinta-suave);
+}
+
+.fut-dato-valor {
+  font-size: 1.45rem;
+  font-weight: 700;
+  line-height: 1.2;
   color: var(--granate-oscuro);
-  margin-bottom: 0.45rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.fut-mono {
+  font-family: "JetBrains Mono", "Consolas", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+}
+
+.fut-apagado {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--tinta-suave);
+  padding-top: 0.3rem;
+}
+
+[data-testid="stChatMessage"] p.fut-archivo {
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: var(--tinta-suave);
+  margin: -0.35rem 0 0.2rem 0;
   word-break: break-all;
 }
 
-/* El botón "Abrir e imprimir" ya no vive aquí: se genera con su propio CSS inline
+.fut-siguientes {
+  border-top: 1px solid var(--borde);
+  margin-top: 0.75rem;
+  padding-top: 0.85rem;
+}
+
+[data-testid="stChatMessage"] p.fut-seccion {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tinta-suave);
+  margin: 0 0 0.5rem 0;
+}
+
+.fut-pasos {
+  counter-reset: paso;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.fut-pasos li {
+  counter-increment: paso;
+  position: relative;
+  padding-left: 2rem;
+  margin: 0 0 0.55rem 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--tinta);
+}
+
+.fut-pasos li:last-child {
+  margin-bottom: 0;
+}
+
+.fut-pasos li::before {
+  content: counter(paso);
+  position: absolute;
+  left: 0;
+  top: 0.05rem;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 50%;
+  background: var(--granate);
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fut-pasos strong {
+  font-weight: 650;
+}
+
+.fut-adjuntos {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--tinta-suave);
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 520px) {
+  .fut-pago {
+    grid-template-columns: 1fr;
+  }
+  .fut-dato + .fut-dato {
+    border-left: none;
+    border-top: 1px solid var(--granate-borde);
+  }
+}
+
+/* El botón "Imprimir" no vive aquí: se genera con su propio CSS inline
    dentro de app.py (renderizarBotonImprimir), porque necesita un <script> que
    convierta el PDF a un Blob en el navegador y st.markdown no ejecuta <script>. Se
    renderiza con st.components.v1.html en un iframe aparte, así que no puede tomar los
