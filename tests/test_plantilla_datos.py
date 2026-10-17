@@ -338,3 +338,18 @@ def testUnaPlantillaEnviadaSinRellenarNoSeTomaComoDato() -> None:
     )
     assert respuesta.solicitud.celular == ""
     assert "Revisemos" not in respuesta.mensaje
+
+
+def testCambiarLosCursosRegeneraLaFundamentacion() -> None:
+    agente = _agente()
+    solicitud = SolicitudFut(tramiteClave="rectificacion_matricula")
+    solicitud.fusionar(dict(_DATOS_ESTUDIANTE))
+    primera = _confirmar(agente, solicitud, _DOS_CURSOS)
+    assert "Física II" in primera.solicitud.fundamentacion
+
+    # El estudiante pulsa «Cambiar cursos», quita uno y vuelve a confirmar.
+    solicitud.cursosConfirmados = False
+    segunda = _confirmar(agente, solicitud, _DOS_CURSOS[:1])
+    assert segunda.formularioListo
+    assert "Física II" not in segunda.solicitud.fundamentacion
+    assert "S/ 8.40 (1 curso × S/ 8.40 c/u)" in segunda.mensaje

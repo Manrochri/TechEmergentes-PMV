@@ -25,6 +25,7 @@ from src.modelos import (
     CAMPOS_OBLIGATORIOS,
     PREFIJO_DATOS_TRAMITE,
     CAMPO_CURSOS,
+    MAXIMO_CURSOS,
     SolicitudFut,
     separarCampoCurso,
     validarFilasCursos,
@@ -113,8 +114,11 @@ def inicializarEstado(configuracion: Configuracion) -> None:
     if "cursosPorConfirmar" not in st.session_state:
         # cursos ya validados que esperan el "Sí, son correctos" del estudiante
         st.session_state.cursosPorConfirmar = None
-    if "versionTablaCursos" not in st.session_state:
-        st.session_state.versionTablaCursos = 0
+    if "filasCursos" not in st.session_state:
+        # filas de la lista de cursos del chat: [{"id": int, "curso": str, ...}]
+        st.session_state.filasCursos = []
+    if "siguienteIdCurso" not in st.session_state:
+        st.session_state.siguienteIdCurso = 0
 
 
 def reiniciarConversacion(configuracion: Configuracion) -> None:
@@ -129,7 +133,7 @@ def reiniciarConversacion(configuracion: Configuracion) -> None:
     st.session_state.plantillaPendiente = None
     st.session_state.selectorCursos = None
     st.session_state.cursosPorConfirmar = None
-    st.session_state.versionTablaCursos += 1
+    st.session_state.filasCursos = []
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +176,18 @@ def renderizarPanelLateral(configuracion: Configuracion) -> None:
 
         st.markdown('<p class="panel-titulo">AVANCE DEL FORMULARIO</p>', unsafe_allow_html=True)
         renderizarAvance(solicitud)
+
+        tramite = solicitud.tramite
+        if (
+            tramite is not None
+            and tramite.camposPorCurso
+            and solicitud.cursosConfirmados
+            and st.session_state.selectorCursos is None
+        ):
+            if st.button("Cambiar cursos", icon=":material/edit:", type="secondary", use_container_width=True):
+                solicitud.cursosConfirmados = False
+                abrirSelectorCursos("Modifica tus cursos: puedes agregar, quitar o corregir, y luego confirma.")
+                st.rerun()
 
         with st.expander("Revisar y corregir datos"):
             renderizarFormularioManual(solicitud, configuracion)
@@ -327,27 +343,18 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
                     etiqueta, value=solicitud.datosTramite.get(adicional.clave, "")
                 )
 
-        # Cursos (p. ej. rectificación de matrícula): tabla editable, una fila por curso.
-        filasCursos: list[dict[str, object]] | None = None
+        # Cursos (p. ej. rectificación de matrícula): aquí solo se muestran. Se agregan,
+        # quitan y confirman en la lista del chat (botón «Cambiar cursos» de este panel),
+        # para que haya una sola forma de editarlos y siempre con confirmación.
         if tramiteElegido is not None and tramiteElegido.camposPorCurso:
             st.markdown("**Cursos**")
-            columnas = [c.clave for c in tramiteElegido.camposPorCurso]
-            filas = [
-                {clave: curso.get(clave, "") for clave in columnas}
-                for _, curso in solicitud.cursosRegistrados()
-            ] or [{clave: "" for clave in columnas}]
-            filasCursos = st.data_editor(
-                filas,
-                num_rows="dynamic",
-                hide_index=True,
-                key="editor_cursos",
-                column_config={
-                    c.clave: st.column_config.TextColumn(c.etiqueta, help=c.pista or None)
-                    for c in tramiteElegido.camposPorCurso
-                },
-            )
-            if tramiteElegido.cobroPorCurso:
-                st.caption(f"{tramiteElegido.montoUnitarioTexto}: el total se calcula por cada fila.")
+            if solicitud.cursosConfirmados and solicitud.tramiteClave == claveElegida:
+                st.caption(" · ".join(
+                    f"{c.get('curso', '')} ({c.get('seccionOrigen', '')} → {c.get('seccionDestino', '')})"
+                    for _, c in solicitud.cursosRegistrados()
+                ))
+            else:
+                st.caption("Al guardar, te pediré los cursos en el chat.")
 
         datosEmpresa: dict[str, str] = {}
         if claveElegida == "carta_presentacion":
@@ -392,20 +399,7 @@ def renderizarFormularioManual(solicitud: SolicitudFut, configuracion: Configura
     if datosTramite:
         cambios["datosTramite"] = datosTramite
 
-    if filasCursos is not None:
-        # Mismas reglas que la tabla del chat: al menos un curso y sin datos vacíos.
-        _, erroresCursos = validarFilasCursos(list(filasCursos), tramiteElegido.camposPorCurso)
-        if erroresCursos:
-            st.error(" ".join(erroresCursos))
-            return
-
     solicitud.fusionar(cambios)
-    if filasCursos is not None:
-        # Guardar desde el formulario es una confirmación explícita de la lista: la
-        # tabla reemplaza los cursos (así también se pueden borrar).
-        solicitud.confirmarCursos(list(filasCursos))
-        st.session_state.selectorCursos = None
-        st.session_state.cursosPorConfirmar = None
     solicitud.aplicarValoresDelTramite()
     generarDesdeFormulario(solicitud, configuracion)
 
@@ -418,6 +412,12 @@ def generarDesdeFormulario(solicitud: SolicitudFut, configuracion: Configuracion
         return
 
     faltantes = solicitud.camposFaltantes()
+    if CAMPO_CURSOS in faltantes and "tramiteClave" not in faltantes:
+        abrirSelectorCursos(
+            "Guardé tus datos. Antes de generar el FUT, indica aquí los cursos que quieres "
+            "rectificar y confírmalos."
+        )
+        st.rerun()
     if faltantes:
         etiquetas = ", ".join(describirCampo(c).lower() for c in faltantes[:4])
         st.warning(f"Todavía faltan datos: {etiquetas}.")
@@ -783,9 +783,7 @@ def publicarRespuesta(respuesta: RespuestaAgente) -> None:
     # esta ejecución. Se deja pendiente y ``principal`` lo aplica antes de dibujarlo.
     st.session_state.plantillaPendiente = respuesta.plantilla or None
     if respuesta.mostrarSelectorCursos:
-        st.session_state.selectorCursos = len(st.session_state.mensajes) - 1
-        st.session_state.cursosPorConfirmar = None
-        st.session_state.versionTablaCursos += 1
+        activarSelectorCursos(len(st.session_state.mensajes) - 1)
     st.rerun()
 
 
@@ -812,25 +810,96 @@ def renderizarSelectorCursos(indice: int) -> None:
         renderizarConfirmacionCursos(st.session_state.cursosPorConfirmar, tramite, indice)
 
 
+def activarSelectorCursos(indice: int) -> None:
+    """Muestra la lista de cursos en el mensaje ``indice``, precargada con lo que haya."""
+    solicitud: SolicitudFut = st.session_state.solicitud
+    st.session_state.selectorCursos = indice
+    st.session_state.cursosPorConfirmar = None
+    st.session_state.filasCursos = []
+    for _, curso in solicitud.cursosRegistrados():
+        agregarFilaCurso(dict(curso))
+    if not st.session_state.filasCursos:
+        agregarFilaCurso()
+
+
+def abrirSelectorCursos(texto: str) -> None:
+    """Publica un mensaje del asistente con la lista de cursos (p. ej. «Cambiar cursos»)."""
+    st.session_state.mensajes.append({"role": "assistant", "content": texto})
+    st.session_state.plantillaPendiente = None
+    activarSelectorCursos(len(st.session_state.mensajes) - 1)
+
+
+def agregarFilaCurso(datos: dict[str, str] | None = None) -> None:
+    """Añade una fila a la lista de cursos. Cada fila tiene un id estable para que sus
+    campos conserven lo escrito aunque se quiten otras filas."""
+    if len(st.session_state.filasCursos) >= MAXIMO_CURSOS:
+        return
+    st.session_state.siguienteIdCurso += 1
+    st.session_state.filasCursos.append({"id": st.session_state.siguienteIdCurso, **(datos or {})})
+
+
+def quitarFilaCurso(idFila: int) -> None:
+    st.session_state.filasCursos = [f for f in st.session_state.filasCursos if f["id"] != idFila]
+
+
+def renderizarFilaCurso(fila: dict, posicion: int, campos, unaSolaFila: bool) -> None:
+    """Contenido del recuadro de un curso: título, sus tres campos y el botón «Quitar»."""
+    st.markdown(f'<p class="curso-numero">Curso {posicion}</p>', unsafe_allow_html=True)
+    columnas = st.columns([4, 2, 2, 1.3], vertical_alignment="bottom")
+    for columna, campo in zip(columnas, campos):
+        with columna:
+            fila[campo.clave] = st.text_input(
+                campo.etiqueta,
+                value=fila.get(campo.clave, ""),
+                placeholder=campo.pista.capitalize() if campo.pista else "",
+                max_chars=80,
+                key=f"curso_{fila['id']}_{campo.clave}",
+            )
+    with columnas[-1]:
+        st.button(
+            "Quitar",
+            icon=":material/delete:",
+            key=f"quitar_curso_{fila['id']}",
+            type="secondary",
+            use_container_width=True,
+            disabled=unaSolaFila,
+            help="Debe quedar al menos un curso." if unaSolaFila else f"Quitar el curso {posicion}",
+            on_click=quitarFilaCurso,
+            args=(fila["id"],),
+        )
+
+
 def renderizarTablaCursos(solicitud: SolicitudFut, tramite, indice: int) -> None:
-    """Paso 1: tabla editable + total en vivo + botón «Continuar» con validación."""
-    claves = [c.clave for c in tramite.camposPorCurso]
-    filasIniciales = [
-        {clave: curso.get(clave, "") for clave in claves} for _, curso in solicitud.cursosRegistrados()
-    ] or [{clave: "" for clave in claves}]
+    """Paso 1: un renglón por curso con su botón «Quitar», «Agregar otro curso», total en
+    vivo y «Continuar» con validación.
 
-    filas = st.data_editor(
-        filasIniciales,
-        num_rows="dynamic",
-        hide_index=True,
-        key=f"tabla_cursos_{indice}_{st.session_state.versionTablaCursos}",
-        column_config={
-            c.clave: st.column_config.TextColumn(c.etiqueta, help=c.pista or None, max_chars=80)
-            for c in tramite.camposPorCurso
-        },
+    Se usan campos de texto y botones normales (no una hoja de cálculo) para que agregar
+    o quitar un curso sea evidente, sin depender de atajos de teclado.
+    """
+    filas: list[dict] = st.session_state.filasCursos
+    if not filas:
+        agregarFilaCurso()
+        filas = st.session_state.filasCursos
+    campos = tramite.camposPorCurso
+    unaSolaFila = len(filas) == 1
+
+    for posicion, fila in enumerate(list(filas), start=1):
+        # Cada curso va en su propio recuadro (fondo gris claro) para que se distinga
+        # dónde empieza y termina; la clase st-key-tarjeta_curso_* la estiliza el CSS.
+        tarjeta = st.container(border=True, key=f"tarjeta_curso_{fila['id']}")
+        with tarjeta:
+            renderizarFilaCurso(fila, posicion, campos, unaSolaFila)
+
+    st.button(
+        "Agregar otro curso",
+        icon=":material/add:",
+        key=f"agregar_curso_{indice}",
+        type="secondary",
+        disabled=len(filas) >= MAXIMO_CURSOS,
+        on_click=agregarFilaCurso,
     )
-    cursos, errores = validarFilasCursos(list(filas), tramite.camposPorCurso)
 
+    cursos, errores = validarFilasCursos(st.session_state.filasCursos, campos)
     if cursos and tramite.cobroPorCurso:
         resumen = (
             f'Total: <strong>{html.escape(tramite.montoTotalFormateado(len(cursos)))}</strong>'
@@ -842,19 +911,13 @@ def renderizarTablaCursos(solicitud: SolicitudFut, tramite, indice: int) -> None
         resumen = ""
     if resumen:
         st.markdown(f'<p class="cursos-total">{resumen}</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="cursos-ayuda">Para agregar un curso, escribe en la fila vacía del final. '
-        "Para quitar uno, marca la casilla a la izquierda de la fila y pulsa el ícono de "
-        "papelera (o la tecla Supr).</p>",
-        unsafe_allow_html=True,
-    )
 
     if st.button("Continuar", type="primary", key=f"continuar_cursos_{indice}"):
         if errores:
             for error in errores:
                 st.error(error)
             return
-        # Se guarda la lista (aún sin confirmar) para que «Editar» la recupere.
+        # Se guarda la lista (aún sin confirmar); «Editar» vuelve a estas mismas filas.
         solicitud.cursos = cursos
         st.session_state.cursosPorConfirmar = cursos
         st.rerun()
@@ -893,7 +956,6 @@ def renderizarConfirmacionCursos(cursos: list[dict[str, str]], tramite, indice: 
     with columnaEditar:
         if st.button("Editar cursos", type="secondary", key=f"editar_cursos_{indice}", use_container_width=True):
             st.session_state.cursosPorConfirmar = None
-            st.session_state.versionTablaCursos += 1
             st.rerun()
 
 

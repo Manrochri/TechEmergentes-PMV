@@ -333,6 +333,9 @@ class SolicitudFut(BaseModel):
             return errores
         self.cursos = cursos
         self.cursosConfirmados = True
+        # Si los cursos cambian después de haber generado el FUT, la fundamentación
+        # (que los lista) debe volver a redactarse.
+        self.fundamentacion = ""
         return []
 
     def asignarDatoDeCurso(self, numero: int, clave: str, valor: str) -> bool:

@@ -22,15 +22,17 @@ el formulario, se escribe encima de él. El reverso con la lista de trámites se
   cuadro solo lo que falta. Como respaldo, el último mensaje trae un desplegable *"Ver la
   plantilla de datos"* con un botón para volver a escribirla en el cuadro.
 - **Rectificación de varios cursos con cobro por curso.** Al reconocer la rectificación de
-  matrícula, el asistente muestra **dentro del chat una tabla** (curso, sección de origen,
-  sección de destino) donde el estudiante agrega o quita cursos, con el **total calculado en
-  vivo** (*S/ 16.80 · 2 cursos × S/ 8.40 c/u*). Al pulsar «Continuar» se valida que haya al
-  menos un curso, que ninguna fila tenga datos vacíos y que la sección de destino sea distinta
-  de la de origen. Luego **siempre pide confirmación** («¿Confirmas estos 2 cursos?» → «Sí, son
-  correctos» / «Editar cursos»). Solo después de confirmar aparece la plantilla con los datos
-  personales. El total con la nota del monto individual se muestra en la barra lateral y en la
-  tarjeta final, y los cursos se imprimen en la fundamentación, uno por renglón. La lista
-  también se puede corregir en la tabla del formulario manual (con las mismas validaciones).
+  matrícula, el asistente muestra **dentro del chat una lista de cursos**: un renglón por
+  curso (curso, sección de origen, sección de destino) con su propio botón **«Quitar»**, y un
+  botón **«Agregar otro curso»**, con el **total calculado en vivo** (*S/ 16.80 · 2 cursos ×
+  S/ 8.40 c/u*). No hace falta conocer atajos de teclado. Al pulsar «Continuar» se valida que
+  haya al menos un curso, que ningún curso tenga datos vacíos y que la sección de destino sea
+  distinta de la de origen. Luego **siempre pide confirmación** («¿Confirmas estos 2 cursos?» →
+  «Sí, son correctos» / «Editar cursos»). Solo después de confirmar aparece la plantilla con
+  los datos personales. Para modificarlos más tarde, el botón **«Cambiar cursos»** del panel
+  lateral vuelve a abrir la lista en el chat; al confirmar de nuevo se regenera el FUT con el
+  total actualizado. El total con la nota del monto individual se muestra en la barra lateral
+  y en la tarjeta final, y los cursos se imprimen en la fundamentación, uno por renglón.
 - **Completa el FUT automáticamente.** Dependencia de destino, tipo de solicitante, datos
   personales, domicilio, contacto, fundamentación, documentos adjuntos, folios, lugar y fecha.
 - **Descarga e impresión desde el propio chat.** Cuando el formulario queda completo, el mensaje

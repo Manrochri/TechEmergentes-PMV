@@ -95,6 +95,42 @@ header[data-testid="stHeader"] {
   font-size: 0.94rem;
 }
 
+/* ------------------------------------------------------------------ campos de texto
+   El tema usa blanco como fondo secundario, que es también el fondo de los mensajes:
+   sin un borde propio, los campos "flotan" y no se ve dónde se escribe. Se les da
+   borde, fondo blanco y un anillo granate al enfocarlos (también en el panel lateral).
+   Se apunta al contenedor del campo por su data-testid y, como respaldo para otras
+   versiones de Streamlit, al envoltorio de BaseWeb. */
+[data-testid="stTextInputRootElement"],
+[data-testid="stTextInput"] [data-baseweb="input"] {
+  background: #ffffff !important;
+  border: 1px solid #cdc1bf !important;
+  border-radius: 8px !important;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+[data-testid="stTextInputRootElement"]:hover,
+[data-testid="stTextInput"] [data-baseweb="input"]:hover {
+  border-color: #a99a97 !important;
+}
+
+[data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
+  border-color: var(--granate) !important;
+  box-shadow: 0 0 0 3px rgba(121, 45, 47, 0.14);
+}
+
+[data-testid="stTextInput"] [data-baseweb="base-input"],
+[data-testid="stTextInputField"],
+[data-testid="stTextInput"] input {
+  background: transparent !important;
+}
+
+[data-testid="stTextInput"] input::placeholder {
+  color: #a39694;
+  opacity: 1;
+}
+
 /* ------------------------------------------------------------------ panel lateral */
 [data-testid="stSidebar"] {
   background: var(--superficie);
@@ -437,10 +473,29 @@ header[data-testid="stHeader"] {
   color: var(--tinta-suave);
 }
 
-[data-testid="stChatMessage"] p.cursos-ayuda {
-  font-size: 0.76rem;
+[data-testid="stChatMessage"] p.curso-numero {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--granate);
+  margin: 0 0 -0.35rem 0;
+}
+
+/* Recuadro de cada curso: fondo gris claro y borde, para que se vea dónde empieza
+   y termina cada uno y los campos blancos de adentro resalten. */
+[class*="st-key-tarjeta_curso_"] {
+  /* Tono cálido de la paleta, más marcado que el fondo de la página (#faf8f7), para
+     que cada curso se separe con claridad del blanco del mensaje. */
+  background: #f2eae8;
+  border: 1px solid #dfd0cd !important;
+  border-radius: var(--radio) !important;
+}
+
+[class*="st-key-tarjeta_curso_"] [data-testid="stWidgetLabel"] p {
+  font-size: 0.8rem;
+  font-weight: 560;
   color: var(--tinta-suave);
-  margin: 0 0 0.6rem 0;
 }
 
 .cursos-confirmar {
